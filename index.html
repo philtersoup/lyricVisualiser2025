@@ -1,17 +1,21 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lyric Visualizer with Glitch Effects</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Lyric Visualizer 3D</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/addons/p5.sound.min.js"></script>
     <style>
-        body {
+        html, body {
+            height: 100%;
+            width: 100%;
             margin: 0;
             padding: 0;
             overflow: hidden;
-            background-color: #000;
+            overscroll-behavior: none;
+            -webkit-overflow-scrolling: auto;
             touch-action: none;
         }
         #visualizer-container {
@@ -30,7 +34,7 @@
             justify-content: center;
             z-index: 10;
         }
-        button, input {
+        button {
             background-color: rgba(255, 255, 255, 0.2);
             color: white;
             border: 1px solid white;
@@ -44,9 +48,6 @@
         button:hover {
             background-color: rgba(255, 255, 255, 0.4);
         }
-        #glitch-intensity {
-            width: 100px;
-        }
     </style>
 </head>
 <body>
@@ -54,30 +55,9 @@
     <div id="controls">
         <button id="play-btn">Play</button>
         <button id="pause-btn">Pause</button>
-        <!-- <input type="file" id="srt-file" accept=".srt" /> -->
-        <!-- <input type="range" id="glitch-intensity" min="0" max="100" value="50" /> -->
-        <!-- <span style="color: white;">Glitch</span> -->
     </div>
-
     <script>
-        // Shader variables
-        let glitchShader;
-        let feedbackShader;
-        let mainGraphics;
-        let feedbackGraphics;
-        let glitchIntensity = 0.5;
-
-        // Audio variables
-        let song;
-        let fft;
-        let lyrics = [];
-        let srtContent;
-        let srtLoaded = false;
-        let customFont;
-        
-
-        // Define shader sources
-        const glitchVertexShader = `
+const glitchVertexShader = `
             attribute vec3 aPosition;
             attribute vec2 aTexCoord;
             
@@ -207,6 +187,23 @@
             }
         `;
 
+
+        // Shader variables
+        let glitchShader;
+        let feedbackShader;
+        let mainGraphics;
+        let feedbackGraphics;
+        let glitchIntensity = 0.5;
+
+        // Audio variables
+        let song;
+        let fft;
+        let lyrics = [];
+        let srtContent;
+        let srtLoaded = false;
+        let customFont;
+        
+
         function preload() {
             // Load custom font
             customFont = loadFont('Blackout Midnight.ttf');
@@ -295,8 +292,7 @@
             // Save current frame for feedback
             feedbackGraphics.image(mainGraphics, 0, 0);
             
-            // Clear main graphics for new frame
-            mainGraphics.background(0);
+            
             
             // Analyze audio if playing
             let audioLevel = 0;
@@ -329,6 +325,8 @@
                 audioLevel = sin(millis() * 0.001) * 0.5 + 0.5;
             }
             
+            
+            
             // Draw lyrics on main graphics
             drawLyrics(mainGraphics, bass, mid, treble);
             
@@ -336,7 +334,7 @@
             shader(feedbackShader);
             feedbackShader.setUniform('prevFrame', feedbackGraphics);
             feedbackShader.setUniform('currentFrame', mainGraphics);
-            feedbackShader.setUniform('feedbackAmount', 0.6 + audioLevel * 0.7);
+            feedbackShader.setUniform('fedebackAmount', 0.7 + audioLevel * 0.9);
             feedbackShader.setUniform('time', millis() * 0.001);
             rect(0, 0, width, height);
             
@@ -344,9 +342,13 @@
             shader(glitchShader);
             glitchShader.setUniform('tex0', mainGraphics);
             glitchShader.setUniform('time', millis() * 0.001);
-            glitchShader.setUniform('intensity', glitchIntensity + audioLevel * 0.3);
+            glitchShader.setUniform('intensity', glitchIntensity + audioLevel * 0.73);
             glitchShader.setUniform('audioLevel', audioLevel);
             rect(0, 0, width, height);
+
+            // Clear main graphics for new frame
+            mainGraphics.background( Math.pow(bass, 50.4) * 255, treble * 250);
+            
         }
         
         function drawLyrics(graphics, bass, mid, treble) {
@@ -363,8 +365,8 @@
                 // Calculate dynamic size based on audio
                 let dynamicSize = lyric.size * (width / 800); // scale with screen size
                 if (song && song.isPlaying()) {
-                    if (i % 3 === 0) dynamicSize += bass * 150;
-                    else if (i % 3 === 1) dynamicSize += mid * 80;
+                    if (i % 3 === 0) dynamicSize += bass * 100;
+                    else if (i % 3 === 1) dynamicSize += mid * 40;
                     else dynamicSize += treble * 50;
                 } else {
                     dynamicSize += sin(frameCount * 0.05 + i) * 10;
@@ -434,6 +436,8 @@
                     y: mainGraphics.height/2,
                     targetX: random(mainGraphics.width * 0.2, mainGraphics.width * 0.8),
                     targetY: random(mainGraphics.height * 0.2, mainGraphics.height * 0.8),
+                    targetZ: random(-1000, 1000),
+                    z: 0,
                     speed: random(0.05, 0.1)
                 });
             }
@@ -462,6 +466,7 @@
             feedbackGraphics.resizeCanvas(width, height);
             randomizeLyricPositions();
         }
+    
     </script>
 </body>
 </html>
