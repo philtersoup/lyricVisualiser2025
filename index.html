@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lyric Visualizer with Glitch Effects</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/addons/p5.sound.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+            touch-action: none;
+        }
+        #visualizer-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+        #controls {
+            position: fixed;
+            bottom: 20px;
+            left: 0;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            z-index: 10;
+        }
+        button, input {
+            background-color: rgba(255, 255, 255, 0.2);
+            color: white;
+            border: 1px solid white;
+            border-radius: 20px;
+            padding: 10px 20px;
+            margin: 0 10px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.3s ease;
+        }
+        button:hover {
+            background-color: rgba(255, 255, 255, 0.4);
+        }
+        #glitch-intensity {
+            width: 100px;
+        }
+    </style>
+</head>
+<body>
+    <div id="visualizer-container"></div>
+    <div id="controls">
+        <button id="play-btn">Play</button>
+        <button id="pause-btn">Pause</button>
+        <!-- <input type="file" id="srt-file" accept=".srt" /> -->
+        <!-- <input type="range" id="glitch-intensity" min="0" max="100" value="50" /> -->
+        <!-- <span style="color: white;">Glitch</span> -->
+    </div>
+
+    <script>
+        // Shader variables
+        let glitchShader;
+        let feedbackShader;
+        let mainGraphics;
+        let feedbackGraphics;
+        let glitchIntensity = 0.5;
+
+        // Audio variables
+        let song;
+        let fft;
+        let lyrics = [];
+        let srtContent;
+        let srtLoaded = false;
+        let customFont;
+        
+
+        // Define shader sources
+        const glitchVertexShader = `
+            attribute vec3 aPosition;
+            attribute vec2 aTexCoord;
+            
+            varying vec2 vTexCoord;
+            
+            void main() {
+                vTexCoord = aTexCoord;
+                
+                // Fix for p5.js WEBGL Y-axis flip
+                vTexCoord.y = 1.0 - vTexCoord.y;
+                
+                vec4 positionVec4 = vec4(aPosition, 1.0);
+                positionVec4.xy = positionVec4.xy * 2.0 - 1.0;
+                gl_Position = positionVec4;
+            }
+        `;
+
+        const glitchFragmentShader = `
+            precision mediump float;
+            
+            varying vec2 vTexCoord;
+            
+            uniform sampler2D tex0;
+            uniform float time;
+            uniform float intensity;
+            uniform float audioLevel;
+            
+            float random(vec2 st) {
+                return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
+            }
+            
+            vec2 rgbShift(vec2 uv, float amount) {
+                float noise = random(vec2(time * 0.01, uv.y * 0.5)) * 2.0 - 1.0;
+                return uv + vec2(noise * amount * 0.05, 0.0);
+            }
+            
+            void main() {
+                vec2 uv = vTexCoord;
+                
+                // RGB shift based on intensity
+                float shiftAmount = intensity * (0.01 + audioLevel * 0.03);
+                vec2 uvR = rgbShift(uv, shiftAmount * 1.0);
+                vec2 uvG = rgbShift(uv, shiftAmount * 0.5);
+                vec2 uvB = rgbShift(uv, shiftAmount * -1.0);
+                
+                // Digital noise
+                float noiseIntensity = intensity * 0.2 * audioLevel;
+                float noise = random(uv * time) * noiseIntensity;
+                
+                // Horizontal glitch lines
+                float lineNoise = step(0.98 - intensity * 0.3, random(vec2(time, floor(uv.y * 20.0))));
+                vec2 lineOffset = vec2(random(vec2(time, uv.y)) * 0.05 * intensity, 0.0);
+                uv.x += lineOffset.x * lineNoise;
+                
+                // Create some vertical displacement
+                float vertJitter = step(0.98 - intensity * 0.1, random(vec2(time * 0.1, floor(uv.x * 50.0))));
+                uv.y += random(vec2(time * 0.2, uv.x)) * 0.02 * intensity * vertJitter;
+                
+                // Sample the texture with different UV coords for RGB channels
+                float r = texture2D(tex0, uvR).r;
+                float g = texture2D(tex0, uvG).g;
+                float b = texture2D(tex0, uvB).b;
+                
+                // Add noise to the RGB channels
+                r += noise * random(vec2(uv.x, time));
+                g += noise * random(vec2(uv.y, time * 1.1));
+                b += noise * random(vec2(uv.x + uv.y, time * 1.2));
+                
+                // Add scan lines
+                float scanLineIntensity = 0.05 * intensity;
+                float scanLine = sin(uv.y * 100.0 + time) * scanLineIntensity;
+                
+                gl_FragColor = vec4(r - scanLine, g - scanLine, b - scanLine, 1.0);
+            }
+        `;
+
+        const feedbackVertexShader = `
+            attribute vec3 aPosition;
+            attribute vec2 aTexCoord;
+            
+            varying vec2 vTexCoord;
+            
+            void main() {
+                vTexCoord = aTexCoord;
+                
+                // Fix for p5.js WEBGL Y-axis flip
+                vTexCoord.y = 1.0 - vTexCoord.y;
+                
+                vec4 positionVec4 = vec4(aPosition, 1.0);
+                positionVec4.xy = positionVec4.xy * 2.0 - 1.0;
+                gl_Position = positionVec4;
+            }
+        `;
+
+        const feedbackFragmentShader = `
+            precision mediump float;
+            
+            varying vec2 vTexCoord;
+            
+            uniform sampler2D prevFrame;
+            uniform sampler2D currentFrame;
+            uniform float feedbackAmount;
+            uniform float time;
+            
+            vec2 distort(vec2 uv) {
+                // Add subtle distortion for feedback warping
+                uv.x += sin(uv.y * 10.0 + time) * 0.001 * feedbackAmount;
+                uv.y += cos(uv.x * 10.0 + time) * 0.001 * feedbackAmount;
+                return uv;
+            }
+            
+            void main() {
+                vec2 uv = vTexCoord;
+                
+                // Sample the current and previous frames
+                vec4 current = texture2D(currentFrame, uv);
+                vec4 prev = texture2D(prevFrame, distort(uv));
+                
+                // Mix the current frame with the previous frame
+                vec4 color = mix(current, prev, 0.85 * feedbackAmount);
+                
+                // Add a subtle RGB shift to the feedback
+                color.r = mix(color.r, texture2D(prevFrame, distort(uv + vec2(0.001, 0.0))).r, 0.3 * feedbackAmount);
+                color.b = mix(color.b, texture2D(prevFrame, distort(uv - vec2(0.001, 0.0))).b, 0.3 * feedbackAmount);
+                
+                gl_FragColor = color;
+            }
+        `;
+
+        function preload() {
+            // Load custom font
+            customFont = loadFont('Blackout Midnight.ttf');
+            
+            // Load song
+            song = loadSound('Vessels_Masterv3_4824.wav');
+            
+            // Load SRT file from server - we'll parse it in setup() after mainGraphics is initialized
+            loadStrings('lyrics.srt', function(result) {
+                srtContent = result.join('\n');
+                srtLoaded = true;
+            });
+        }
+
+        function setup() {
+            // Create canvas inside the container
+            let canvas = createCanvas(windowWidth, windowHeight, WEBGL);
+            canvas.parent('visualizer-container');
+            
+            // Initialize graphics buffers for shader effects
+            mainGraphics = createGraphics(width, height);
+            feedbackGraphics = createGraphics(width, height);
+            
+            // Initialize shaders
+            glitchShader = createShader(glitchVertexShader, glitchFragmentShader);
+            feedbackShader = createShader(feedbackVertexShader, feedbackFragmentShader);
+            
+            // Set up audio analyzer
+            fft = new p5.FFT();
+            
+            // Set text properties
+            mainGraphics.textFont(customFont);
+            mainGraphics.textAlign(CENTER, CENTER);
+
+              // Parse SRT content if loaded
+            if (srtLoaded && srtContent) {
+                lyrics = parseSRT(srtContent);
+                console.log("SRT parsed, found " + lyrics.length + " entries");
+            }
+            // Initialize lyric positions
+            randomizeLyricPositions();
+            
+            // Setup controls
+            document.getElementById('play-btn').addEventListener('click', function() {
+                if (song && !song.isPlaying()) {
+                    song.play();
+                }
+            });
+            
+            document.getElementById('pause-btn').addEventListener('click', function() {
+                if (song && song.isPlaying()) {
+                    song.pause();
+                }
+            });
+            
+            // document.getElementById('glitch-intensity').addEventListener('input', function() {
+            //     glitchIntensity = this.value / 100;
+            // });
+            
+            // document.getElementById('srt-file').addEventListener('change', function(e) {
+            //     const file = e.target.files[0];
+            //     if (file) {
+            //         const reader = new FileReader();
+            //         reader.onload = function(e) {
+            //             lyrics = parseSRT(e.target.result);
+            //             srtLoaded = true;
+            //             console.log("SRT loaded, found " + lyrics.length + " entries");
+            //         };
+            //         reader.readAsText(file);
+            //     }
+            // });
+        }
+        
+        function randomizeLyricPositions() {
+            for (let lyric of lyrics) {
+                lyric.targetX = random(mainGraphics.width * 0.2, mainGraphics.width * 0.8);
+                lyric.targetY = random(mainGraphics.height * 0.2, mainGraphics.height * 0.8);
+                if (!lyric.x && !lyric.y) {
+                    lyric.x = lyric.targetX;
+                    lyric.y = lyric.targetY;
+                }
+            }
+        }
+
+        function draw() {
+            // Save current frame for feedback
+            feedbackGraphics.image(mainGraphics, 0, 0);
+            
+            // Clear main graphics for new frame
+            mainGraphics.background(0);
+            
+            // Analyze audio if playing
+            let audioLevel = 0;
+            let bass = 0, mid = 0, treble = 0;
+            if (song && song.isPlaying()) {
+                let spectrum = fft.analyze();
+                bass = fft.getEnergy("bass") / 255.0;
+                mid = fft.getEnergy("mid") / 255.0;
+                treble = fft.getEnergy("treble") / 255.0;
+                audioLevel = (bass + mid * 0.8 + treble * 0.6) / 3.0;
+                
+                // Update which lyrics are active based on current time
+                if (srtLoaded) {
+                    updateActiveLyrics(song.currentTime() * 1000);
+                } else {
+                    // If no SRT, cycle through lyrics every 2 seconds
+                    const currentIndex = floor((millis() / 2000) % lyrics.length);
+                    for (let i = 0; i < lyrics.length; i++) {
+                        lyrics[i].active = (i === currentIndex);
+                    }
+                }
+            } else {
+                // When not playing, activate first lyric
+                lyrics[0].active = true;
+                for (let i = 1; i < lyrics.length; i++) {
+                    lyrics[i].active = false;
+                }
+                
+                // Animate audioLevel for preview mode
+                audioLevel = sin(millis() * 0.001) * 0.5 + 0.5;
+            }
+            
+            // Draw lyrics on main graphics
+            drawLyrics(mainGraphics, bass, mid, treble);
+            
+            // Apply feedback shader to blend previous and current frames
+            shader(feedbackShader);
+            feedbackShader.setUniform('prevFrame', feedbackGraphics);
+            feedbackShader.setUniform('currentFrame', mainGraphics);
+            feedbackShader.setUniform('feedbackAmount', 0.6 + audioLevel * 0.7);
+            feedbackShader.setUniform('time', millis() * 0.001);
+            rect(0, 0, width, height);
+            
+            // Apply glitch shader for final output
+            shader(glitchShader);
+            glitchShader.setUniform('tex0', mainGraphics);
+            glitchShader.setUniform('time', millis() * 0.001);
+            glitchShader.setUniform('intensity', glitchIntensity + audioLevel * 0.3);
+            glitchShader.setUniform('audioLevel', audioLevel);
+            rect(0, 0, width, height);
+        }
+        
+        function drawLyrics(graphics, bass, mid, treble) {
+            for (let i = 0; i < lyrics.length; i++) {
+                let lyric = lyrics[i];
+                
+                // Skip non-active lyrics
+                if (!lyric.active) continue;
+                
+                // Move lyrics toward their targets
+                lyric.x = lerp(lyric.x, lyric.targetX, lyric.speed);
+                lyric.y = lerp(lyric.y, lyric.targetY, lyric.speed);
+                
+                // Calculate dynamic size based on audio
+                let dynamicSize = lyric.size * (width / 800); // scale with screen size
+                if (song && song.isPlaying()) {
+                    if (i % 3 === 0) dynamicSize += bass * 150;
+                    else if (i % 3 === 1) dynamicSize += mid * 80;
+                    else dynamicSize += treble * 50;
+                } else {
+                    dynamicSize += sin(frameCount * 0.05 + i) * 10;
+                }
+                
+                // Draw the lyric
+                graphics.textSize(dynamicSize);
+                graphics.fill(color(lyric.color));
+                
+                // Add shadow for better readability
+                graphics.drawingContext.shadowBlur = 15;
+                graphics.drawingContext.shadowColor = lyric.color;
+                
+                graphics.push();
+                graphics.translate(lyric.x, lyric.y);
+                graphics.rotate(sin(frameCount * 0.01 + i) * 0.1);
+                graphics.text(lyric.text, 0, 0);
+                graphics.pop();
+                
+                graphics.drawingContext.shadowBlur = 0;
+            }
+        }
+        
+        function updateActiveLyrics(currentTime) {
+            for (let lyric of lyrics) {
+                // Check if this lyric should be active at the current time
+                const wasActive = lyric.active;
+                lyric.active = (currentTime >= lyric.startTime && currentTime <= lyric.endTime);
+                
+                // When a lyric becomes active, give it a new target position
+                if (lyric.active && !wasActive) {
+                    lyric.targetX = random(mainGraphics.width * 0.2, mainGraphics.width * 0.8);
+                    lyric.targetY = random(mainGraphics.height * 0.2, mainGraphics.height * 0.8);
+                }
+            }
+        }
+        
+        function parseSRT(srtContent) {
+            const parsedLyrics = [];
+            const blocks = srtContent.trim().split('\n\n');
+            
+            for (const block of blocks) {
+                const lines = block.split('\n');
+                if (lines.length < 3) continue;
+                
+                // Extract the time codes (format: 00:00:00,000 --> 00:00:00,000)
+                const timeCode = lines[1];
+                const times = timeCode.split(' --> ');
+                
+                if (times.length !== 2) continue;
+                
+                // Convert timestamps to milliseconds
+                const startTime = timeToMilliseconds(times[0]);
+                const endTime = timeToMilliseconds(times[1]);
+                
+                // Get all text lines (may be multiple lines per subtitle)
+                const text = lines.slice(2).join(' ');
+                
+                parsedLyrics.push({
+                    text: text,
+                    startTime: startTime,
+                    endTime: endTime,
+                    active: false,
+                    color: getRandomColor(),
+                    size: random(40, 80),
+                    x: mainGraphics.width/2,
+                    y: mainGraphics.height/2,
+                    targetX: random(mainGraphics.width * 0.2, mainGraphics.width * 0.8),
+                    targetY: random(mainGraphics.height * 0.2, mainGraphics.height * 0.8),
+                    speed: random(0.05, 0.1)
+                });
+            }
+            
+            return parsedLyrics;
+        }
+
+        function timeToMilliseconds(timeString) {
+            // Format: 00:00:00,000 or 00:00:00.000
+            timeString = timeString.replace(',', '.');
+            const [time, milliseconds] = timeString.split('.');
+            const [hours, minutes, seconds] = time.split(':').map(Number);
+            
+            return (hours * 3600 + minutes * 60 + seconds) * 1000 + parseInt(milliseconds);
+        }
+
+        function getRandomColor() {
+            const colors = ["#FF5733", "#33FFF5", "#FFFC33", "#FF33F5", "#33FF57", "#5733FF"];
+            return colors[Math.floor(random(colors.length))];
+        }
+        
+        // Handle window resizing
+        function windowResized() {
+            resizeCanvas(windowWidth, windowHeight);
+            mainGraphics.resizeCanvas(width, height);
+            feedbackGraphics.resizeCanvas(width, height);
+            randomizeLyricPositions();
+        }
+    </script>
+</body>
+</html>
