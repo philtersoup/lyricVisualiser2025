@@ -9,10 +9,10 @@ let glitchIntensity = 2.5;
 let feedbackBuffer; // NEW: Additional buffer for multi-pass feedback
 
 // Add these variables for effect control
-let feedbackStrength = 0.92; // Base feedback amount
+let feedbackStrength = 1.92; // Base feedback amount
 let feedbackRGBSplit = 0.6; // RGB splitting in feedback 
-let glitchStrength = 1.0; // Base multiplier for glitch effects
-let scanlineCount = 100; // Number of scanlines
+let glitchStrength = 0.5; // Base multiplier for glitch effects
+let scanlineCount = 10; // Number of scanlines
 
 // Audio variables
 let song;
@@ -27,14 +27,14 @@ let currentLyric = null;
 let effectChoice = 0;
 
 // 3D space parameters - using smaller values to keep letters more centered
-let spaceWidth = 400;
-let spaceHeight = 300;
-let spaceDepth = 800;
+let spaceWidth = 800;
+let spaceHeight = 600;
+let spaceDepth = 1200;
 
 // Camera parameters - positioned to look at center
 let cameraX = 0;
 let cameraY = 0;
-let cameraZ = 350;  // Closer to see letters better
+let cameraZ = 550;  // Closer to see letters better
 let lookAtX = 0;    // Always looking at center
 let lookAtY = 0;
 let lookAtZ = 0;    // Look at Z=0 plane where letters will be
@@ -146,7 +146,7 @@ function randomizeLyricPositions3D() {
             
             return {
                 char: char,
-                x: random(-200, 200),  // Start scattered
+                x: random(-100, 100),  // Start scattered
                 y: random(-200, 200),
                 z: random(-300, -100),
                 targetX: startX + (index * spacing),  // Properly spaced line
@@ -545,8 +545,8 @@ function drawLetter3D(graphics, letter, bass, mid, treble, audioLevel) {
 
 function updateActiveLyrics(currentTime) {
     // Transition variables
-    const fadeInTime = 50; // ms
-    const fadeOutTime = 50; // ms
+    const fadeInTime = 150; // ms
+    const fadeOutTime = 150; // ms
     
     for (let lyric of lyrics) {
         const wasActive = lyric.active;
