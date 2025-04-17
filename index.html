@@ -193,7 +193,7 @@ const glitchVertexShader = `
         let feedbackShader;
         let mainGraphics;
         let feedbackGraphics;
-        let glitchIntensity = 0.5;
+        let glitchIntensity = 1.5;
 
         // Audio variables
         let song;
@@ -202,7 +202,10 @@ const glitchVertexShader = `
         let srtContent;
         let srtLoaded = false;
         let customFont;
+        let currentLyric = null;
+
         
+        let effectChoice = 1;
 
         function preload() {
             // Load custom font
@@ -334,7 +337,7 @@ const glitchVertexShader = `
             shader(feedbackShader);
             feedbackShader.setUniform('prevFrame', feedbackGraphics);
             feedbackShader.setUniform('currentFrame', mainGraphics);
-            feedbackShader.setUniform('fedebackAmount', 0.7 + audioLevel * 0.9);
+            feedbackShader.setUniform('feedbackAmount', 0.7 + audioLevel * 0.9);
             feedbackShader.setUniform('time', millis() * 0.001);
             rect(0, 0, width, height);
             
@@ -342,67 +345,145 @@ const glitchVertexShader = `
             shader(glitchShader);
             glitchShader.setUniform('tex0', mainGraphics);
             glitchShader.setUniform('time', millis() * 0.001);
-            glitchShader.setUniform('intensity', glitchIntensity + audioLevel * 0.73);
+            glitchShader.setUniform('intensity', Math.pow(audioLevel,4)* 10 * glitchIntensity);
             glitchShader.setUniform('audioLevel', audioLevel);
             rect(0, 0, width, height);
 
             // Clear main graphics for new frame
-            mainGraphics.background( Math.pow(bass, 50.4) * 255, treble * 250);
+            mainGraphics.background( Math.pow(bass, 50.4) * 255, mid * 15);
+            if(audioLevel > 0.55 && frameCount % 17 === 0) effectChoice =  Math.floor(random(0,4));
             
         }
         
         function drawLyrics(graphics, bass, mid, treble) {
+            
             for (let i = 0; i < lyrics.length; i++) {
-                let lyric = lyrics[i];
-                
-                // Skip non-active lyrics
-                if (!lyric.active) continue;
-                
-                // Move lyrics toward their targets
-                lyric.x = lerp(lyric.x, lyric.targetX, lyric.speed);
-                lyric.y = lerp(lyric.y, lyric.targetY, lyric.speed);
-                
-                // Calculate dynamic size based on audio
-                let dynamicSize = lyric.size * (width / 800); // scale with screen size
+                let l = lyrics[i];
+
+                if (!l.active) continue;
+
+                // Lerp toward target position
+                l.x = lerp(l.x, l.targetX, l.speed);
+                l.y = lerp(l.y, l.targetY, l.speed);
+
+                let baseSize = l.size * (width / 800);
+                let audioMod = 1.0;
+
                 if (song && song.isPlaying()) {
-                    if (i % 3 === 0) dynamicSize += bass * 100;
-                    else if (i % 3 === 1) dynamicSize += mid * 40;
-                    else dynamicSize += treble * 50;
+                    if (i % 3 === 0) audioMod += bass;
+                    else if (i % 3 === 1) audioMod += mid * 0.5;
+                    else audioMod += treble * 0.8;
                 } else {
-                    dynamicSize += sin(frameCount * 0.05 + i) * 10;
+                    audioMod += sin(frameCount * 0.05 + i) * 0.1;
                 }
                 
-                // Draw the lyric
-                graphics.textSize(dynamicSize);
-                graphics.fill(color(lyric.color));
-                
-                // Add shadow for better readability
-                graphics.drawingContext.shadowBlur = 15;
-                graphics.drawingContext.shadowColor = lyric.color;
-                
+                // Split the text into letters
+                const letters = l.text.split('');
+                const spacing = baseSize * 1.5;
+                const centerOffset = (letters.length - 1) * spacing / 2;
+
                 graphics.push();
-                graphics.translate(lyric.x, lyric.y);
-                graphics.rotate(sin(frameCount * 0.01 + i) * 0.1);
-                graphics.text(lyric.text, 0, 0);
-                graphics.pop();
+                graphics.translate(l.x, l.y);
                 
-                graphics.drawingContext.shadowBlur = 0;
+
+                for (let j = 0; j < letters.length; j++) {
+                    const ch = letters[j];
+                    const x = j * spacing - centerOffset;
+                    const y = sin((frameCount + j * 4) * 0.15) * 5 * audioMod;
+                    let scaleMod = 115;
+                    let rotationMod = 0;
+                    let letterOffsetX = 100;
+                    let letterOffsetY = 0;
+                    let letterColor = color(l.color);
+                    let pulseFactor = 2;
+
+                    // Choose a random effect for each letter
+
+                    let letterPosX = l.x + x + letterOffsetX;
+                    let letterPosY = l.y + y + letterOffsetY;
+                    let d = dist(mouseX, mouseY, letterPosX, letterPosY);
+                    // Repel force
+                    if (d < 100) {
+                        let repelStrength = map(d, 0, 100, 200, 0);
+                        letterOffsetX += (letterPosX - mouseX) / d * repelStrength;
+                        letterOffsetY += (letterPosY - mouseY) / d * repelStrength;
+
+                        // Optional: Glow or scale up when hovered
+                        pulseFactor += map(d, 0, 100, 0.5, 0);
+                        letterColor = color(255, 255, 200); // Light up on hover
+                    }
+                    
+
+                    
+
+                    switch (effectChoice) {
+                        case 0: // Scale pulsing
+                            pulseFactor = 1 + 0.1 * sin(frameCount * 0.05 + j * 3);
+                            break;
+                        case 1: // Rotation effect
+                            rotationMod = sin(frameCount * 0.05 + j) * 0.1;
+                            break;
+                        case 2: // Glitch effect
+                            letterOffsetX = random(-5, 5);
+                            letterOffsetY = random(-5, 5);
+                            letterColor = color(random(255)); // Random color for glitch
+                            break;
+                        case 3: // Letter trails
+                            letterOffsetX = sin(frameCount * 0.1 + j * 3) * 5;
+                            letterOffsetY = cos(frameCount * 0.1 + j * 3) * 5;
+                            break;
+                        case 4: // Color shift
+                            letterColor = color(
+                                255 * (0.5 + 0.5 * sin(frameCount * 0.1 + j)),
+                                255 * (0.5 + 0.5 * sin(frameCount * 0.1 + j)),
+                                255 * (0.5 + 0.5 * sin(frameCount * 0.1 + j)),
+                            );
+                            break;
+                    }
+
+                    graphics.push();
+                    graphics.translate(x + letterOffsetX, y + letterOffsetY);
+                    graphics.rotate(rotationMod);
+                    graphics.scale(pulseFactor);
+
+                    graphics.textSize(baseSize * audioMod);
+                    graphics.fill(letterColor);
+                    graphics.stroke(255, 0, 0);
+                    graphics.strokeWeight(10);
+
+                    graphics.text(ch, 0, 0);
+                    graphics.pop();
+                }
+
+                graphics.pop();
+                graphics.drawingContext.shadowBlur = 15;
+                // graphics.drawingContext.shadowColor = l.effects[0]?.letterColor || color(255);
             }
+        }
+        function updateActiveLyrics(currentTime) {
+                for (let lyric of lyrics) {
+                    const wasActive = lyric.active;
+                    lyric.active = (currentTime >= lyric.startTime && currentTime <= lyric.endTime);
+
+                    if (lyric.active && !wasActive) {
+                        lyric.targetX = random(mainGraphics.width * 0.2, mainGraphics.width * 0.8);
+                        lyric.targetY = random(mainGraphics.height * 0.2, mainGraphics.height * 0.8);
+                        
+                        // For per-letter animation
+                        currentLyric = lyric;
+                        currentLetters = lyric.text.split('').map((char, i) => ({
+                            char: char,
+                            offsetX: random(-30, 300),
+                            offsetY: random(-300, 30),
+                            z: random(-100, 100),
+                            speed: random(0.005, 0.01),
+                            alpha: 1
+                        }));
+                    }
+                }
         }
         
-        function updateActiveLyrics(currentTime) {
-            for (let lyric of lyrics) {
-                // Check if this lyric should be active at the current time
-                const wasActive = lyric.active;
-                lyric.active = (currentTime >= lyric.startTime && currentTime <= lyric.endTime);
-                
-                // When a lyric becomes active, give it a new target position
-                if (lyric.active && !wasActive) {
-                    lyric.targetX = random(mainGraphics.width * 0.2, mainGraphics.width * 0.8);
-                    lyric.targetY = random(mainGraphics.height * 0.2, mainGraphics.height * 0.8);
-                }
-            }
-        }
+
         
         function parseSRT(srtContent) {
             const parsedLyrics = [];
