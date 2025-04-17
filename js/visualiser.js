@@ -34,7 +34,7 @@ let spaceDepth = 1200;
 // Camera parameters - positioned to look at center
 let cameraX = 0;
 let cameraY = 0;
-let cameraZ = 550;  // Closer to see letters better
+let cameraZ = 250;  // Closer to see letters better
 let lookAtX = 0;    // Always looking at center
 let lookAtY = 0;
 let lookAtZ = 0;    // Look at Z=0 plane where letters will be
@@ -329,6 +329,45 @@ function draw() {
     rect(-width/2, -height/2, width, height);
 }
 
+function applyMouseScaleEffect(letter, graphics) {
+    // We'll use a simpler approach that doesn't require 3D to screen conversion
+    
+    // Calculate normalized mouse position (0 to 1)
+    const mouseNormX = mouseX / width;
+    const mouseNormY = mouseY / height;
+    
+    // Convert normalized mouse position to -1 to 1 range for 3D space influence
+    const mouseSpace3DX = (mouseNormX * 2 - 1) * 300; // Scale to reasonable 3D space
+    const mouseSpace3DY = (mouseNormY * 2 - 1) * 300;
+    
+    // Calculate distance in 3D space (ignoring Z for simplicity)
+    // This simulates a "beam" from the mouse position into the scene
+    const dx = letter.x - mouseSpace3DX;
+    const dy = letter.y - mouseSpace3DY;
+    const distance = sqrt(dx*dx + dy*dy);
+    
+    // Add depth-based scaling (letters closer to camera can be affected more)
+    // Map letter Z position to a 0-1 range where 1 is closest to camera
+    const depthFactor = map(letter.z, -500, 100, 0.2, 1, true); 
+    
+    // Create a proximity effect - closer to mouse = bigger scale
+    const maxDistance = 120; // Maximum effective distance in 3D space
+    const minScale = 1.0;    // Minimum scale factor
+    const maxScale = 4.5;    // Maximum scale factor
+    
+    // Calculate scale based on proximity
+    let proximityScale = minScale;
+    if (distance < maxDistance) {
+      // Inverse relationship - closer = bigger
+      const influence = (1.0 - (distance / maxDistance)) * depthFactor;
+      // Apply easing function for smoother effect
+      const easedInfluence = influence * influence * (3 - 2 * influence); // Smoothstep
+      proximityScale = minScale + (maxScale - minScale) * easedInfluence;
+    }
+    
+    return proximityScale;
+  }
+
 function draw3DLyrics(graphics, bass, mid, treble, audioLevel) {
     graphics.push();
     
@@ -475,6 +514,7 @@ function drawLetter3D(graphics, letter, bass, mid, treble, audioLevel) {
     
     // Very minimal audio reactive sizing - much more subtle
     let sizeMod = 1.5;
+    sizeMod *= applyMouseScaleEffect(letter, graphics);
     if (letter.char === 'A' || letter.char === 'E' || letter.char === 'I' || letter.char === 'O' || letter.char === 'U') {
         sizeMod += bass * 0.15; // Reduced from 0.2
     } else if (letter.char === ' ') {

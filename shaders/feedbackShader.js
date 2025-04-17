@@ -28,40 +28,45 @@ const feedbackFragmentShader = `
     uniform float time;
     uniform float audioLevel;
 
-    // Organic flow distortion using UV turbulence
-    vec2 meltDistort(vec2 uv, float t) {
-        float flow = sin(t * 0.2) * 0.2 + 0.3;
-        float noiseX = sin(uv.y * 10.0 + t * 0.5) * 0.01;
-        float noiseY = cos(uv.x * 10.0 + t * 0.3) * 0.01;
-        return uv + vec2(noiseX, noiseY) * flow;
+    // Simple checkerboard without any fancy effects
+    // This isolates the checkerboard pattern to see if that's working
+    vec4 simpleCheckerboard(vec2 uv) {
+        float checkerSize = 30.0; // Very large checkers
+        vec2 checkPos = floor(uv * checkerSize);
+        float checker = mod(checkPos.x + checkPos.y, 2.0);
+        
+        // Pure black and white
+        vec3 color = vec3(checker);
+        return vec4(color, 1.0);
     }
 
     void main() {
         vec2 uv = vTexCoord;
-
-        // Apply soft swirling distortion
-        vec2 distortedUV = meltDistort(uv, time);
-
-        // Sample both frames
+        
+        // Basic feedback mix
         vec4 current = texture2D(currentFrame, uv);
-        vec4 prev = texture2D(prevFrame, distortedUV);
+        vec4 prev = texture2D(prevFrame, uv); // No distortion for diagnostic
 
-        // SUPER long trails: feedback blend almost fully previous
-        float trailPersistence = mix(0.96, 0.995, feedbackAmount); // higher value = slower fade
-
-        // Freezing effect: occasionally ignore current frame
-        float freezeTrigger = step(0.997, fract(sin(time * 12.34) * 43758.5453));
-        float freezeStrength = mix(1.0, 0.0, freezeTrigger); // freeze when trigger hits
-
-        // Blend in current only if not freezing
-        vec4 color = mix(current, prev, trailPersistence * freezeStrength);
-
-        // Organic RGB drift
-        vec2 shift = vec2(0.002, 0.0) * feedbackAmount;
-        color.r = mix(color.r, texture2D(prevFrame, distortedUV + shift).r, 0.4 * feedbackAmount);
-        color.b = mix(color.b, texture2D(prevFrame, distortedUV - shift).b, 0.4 * feedbackAmount);
-
-        gl_FragColor = color;
+        // Mix the current frame and previous frame
+        float fadeSpeed = 0.9; // High value = longer trails
+        vec4 feedbackMix = mix(current, prev, fadeSpeed);
+        
+        // Get the checkerboard pattern
+        vec4 checker = simpleCheckerboard(uv);
+        
+        // For diagnostics, let's clearly see where different parts affect the output
+        // based on screen position
+        if (uv.x < 0.33) {
+            // Left third: just show checkerboard
+            gl_FragColor = checker;
+        } 
+        else if (uv.x < 0.66) {
+            // Middle third: mix checkerboard with current frame 
+            gl_FragColor = mix(checker, current, 0.5);
+        }
+        else {
+            // Right third: normal feedback with a bit of checkerboard
+            gl_FragColor = mix(feedbackMix, checker, 0.3);
+        }
     }
 `;
-
