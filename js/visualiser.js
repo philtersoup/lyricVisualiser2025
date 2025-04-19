@@ -1,708 +1,521 @@
-// Main visualization code
+import * as THREE from 'three';
+// Import OrbitControls for basic camera interaction during development (optional)
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-// Shader variables
-let glitchShader;
-let feedbackShader;
-let mainGraphics;
-let feedbackGraphics;
-let glitchIntensity = 2.5;
-let feedbackBuffer; // NEW: Additional buffer for multi-pass feedback
+// --- Global Variables ---
 
-// Add these variables for effect control
-let feedbackStrength = 1.92; // Base feedback amount
-let feedbackRGBSplit = 0.6; // RGB splitting in feedback 
-let glitchStrength = 0.5; // Base multiplier for glitch effects
-let scanlineCount = 10; // Number of scanlines
+// Core Three.js
+let scene, camera, renderer;
+let controls; // For OrbitControls (optional)
 
-// Audio variables
-let song;
-let fft;
+// Audio
+let listener, sound, audioLoader, analyser;
+const FFT_SIZE = 1024; // Should match p5.js FFT size for similar analysis results
+
+// Lyrics
 let lyrics = [];
-let srtContent;
 let srtLoaded = false;
-let customFont;
-let currentLyric = null;
+let currentLyric = null; // Maybe track differently in Three.js
 
-// 3D variables
-let effectChoice = 0;
+// Animation / Timing
+const clock = new THREE.Clock();
+// Custom audio playback tracking
+let audioStartTimestamp = 0;
+let audioPaused = true;
+let audioOffset = 0;
+let lastPauseTime = 0;
 
-// 3D space parameters - using smaller values to keep letters more centered
-let spaceWidth = 800;
-let spaceHeight = 600;
-let spaceDepth = 1200;
+// --- Constants ---
+const FONT_SIZE = 50; // Base size for canvas text
+const FONT_FACE = 'sans-serif'; // Default font
+const LETTER_COLOR = '#FFFFFF'; // Default letter color (can be overridden by SRT parse later)
+const LETTER_SPACING_FACTOR = 0.7; // Adjust as needed
 
-// Camera parameters - positioned to look at center
-let cameraX = 0;
-let cameraY = 0;
-let cameraZ = 250;  // Closer to see letters better
-let lookAtX = 0;    // Always looking at center
-let lookAtY = 0;
-let lookAtZ = 0;    // Look at Z=0 plane where letters will be
+// --- Initialization ---
+function init() {
+    // Scene
+    scene = new THREE.Scene();
 
-// Add these variables to the top of your file with other global variables
-let mouseInfluenceX = 0;
-let mouseInfluenceY = 0;
-let isInteracting = false;
-let lastInteractionTime = 0;
-let interactionTimeout = 2000; // How long interaction effects persist in ms
+    // Camera
+    const aspect = window.innerWidth / window.innerHeight;
+    // Using similar FOV (PI/3 radians is 60 degrees) and near/far planes
+    camera = new THREE.PerspectiveCamera(60, aspect, 25, 2000); // Using near=25 from your fix
+    // Position based on p5.js setup
+    camera.position.set(0, 0, 250);
+    camera.lookAt(scene.position); // Look at origin (0,0,0)
 
-// 3D letter container
-let letters3D = [];
+    // Renderer
+    renderer = new THREE.WebGLRenderer({ antialias: true }); // Keep antialias true!
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    document.getElementById('visualizer-container').appendChild(renderer.domElement);
 
-function preload() {
-    // Load custom font
-    customFont = loadFont('Blackout Midnight.ttf');
-    
-    // Load song
-    song = loadSound('Vessels_Masterv3_4824.mp3');
-    
-    // Load SRT file from server
-    loadStrings('lyrics.srt', function(result) {
-        srtContent = result.join('\n');
+    // Optional: Orbit Controls for Debugging
+    // controls = new OrbitControls(camera, renderer.domElement);
+    // controls.enableDamping = true;
+
+    // Audio Setup
+    listener = new THREE.AudioListener();
+    camera.add(listener); // Attach listener to camera
+    sound = new THREE.Audio(listener);
+    audioLoader = new THREE.AudioLoader();
+    analyser = new THREE.AudioAnalyser(sound, FFT_SIZE);
+
+    // Lighting (basic setup, similar to p5)
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5); // Adjust intensity
+    scene.add(ambientLight);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8); // Adjust intensity
+    directionalLight.position.set(0.5, 0.5, -1); // Example position
+    scene.add(directionalLight);
+
+    // Load Assets
+    loadAudio('Vessels_Masterv3_4824.mp3');
+    loadSRT('lyrics.srt');
+
+    // Event Listeners
+    window.addEventListener('resize', onWindowResize);
+    setupControls();
+
+    // Start Animation Loop
+    animate();
+}
+
+// --- Loaders ---
+function loadAudio(url) {
+    audioLoader.load(url, function(buffer) {
+        sound.setBuffer(buffer);
+        // sound.setLoop(true); // Set if needed
+        sound.setVolume(0.5);
+        console.log("Audio loaded");
+        // Enable play button maybe? Or wait for SRT?
+    }, function(xhr) {
+        console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+    }, function(err) {
+        console.error('Error loading audio:', err);
+    });
+}
+
+async function loadSRT(url) {
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const srtContent = await response.text();
+        lyrics = parseSRT(srtContent); // Reuse your parsing function
         srtLoaded = true;
-    });
-}
-
-function setup() {
-    // Create canvas inside the container
-    let canvas = createCanvas(windowWidth, windowHeight, WEBGL);
-    canvas.parent('visualizer-container');
-    
-    // Initialize graphics buffers for shader effects
-    mainGraphics = createGraphics(width, height, WEBGL);
-    feedbackGraphics = createGraphics(width, height, WEBGL);
-    feedbackBuffer = createGraphics(width, height, WEBGL); // NEW: Additional buffer
-    
-    // Initialize shaders
-    glitchShader = createShader(glitchVertexShader, glitchFragmentShader);
-    feedbackShader = createShader(feedbackVertexShader, feedbackFragmentShader);
-    
-    // Set up audio analyzer
-    fft = new p5.FFT(0.8, 1024);  // Smoother analysis with higher smoothing and more bands
-    
-    // Set text properties
-    mainGraphics.textFont(customFont);
-    mainGraphics.textAlign(CENTER, CENTER);
-    
-    // IMPORTANT: Enable depth sorting but disable depth testing to prevent clipping
-    mainGraphics.setAttributes('antialias', true);
-    mainGraphics._renderer.drawingContext.disable(mainGraphics._renderer.drawingContext.DEPTH_TEST);
-    
-    // For trails effect - set blend mode for better trail visibility
-    mainGraphics.blendMode(BLEND);
-
-    // Parse SRT content if loaded
-    if (srtLoaded && srtContent) {
-        lyrics = parseSRT(srtContent);
         console.log("SRT parsed, found " + lyrics.length + " entries");
-    }
-    
-    // Initialize 3D space for letters
-    randomizeLyricPositions3D();
-    
-    // Setup controls
-    document.getElementById('play-btn').addEventListener('click', function() {
-        if (song && !song.isPlaying()) {
-            song.play();
-        }
-    });
-    
-    document.getElementById('pause-btn').addEventListener('click', function() {
-        if (song && song.isPlaying()) {
-            song.pause();
-        }
-    });
-}
-
-function randomizeLyricPositions3D() {
-    for (let lyric of lyrics) {
-        // Give each lyric a position that's not too centered
-        // Use a wider range of positions but still within camera view
-        lyric.targetX = random(-150, 150);
-        lyric.targetY = random(-100, 100);
-        lyric.targetZ = random(-250, -50);  // Keep in front of camera
-        
-        // Add some rotation for interest
-        lyric.rotX = random(-0.2, 0.2);
-        lyric.rotY = random(-0.2, 0.2);
-        lyric.rotZ = random(-0.2, 0.2);
-        
-        // Initialize position if not already set
-        if (!lyric.x && !lyric.y && !lyric.z) {
-            lyric.x = lyric.targetX;
-            lyric.y = lyric.targetY;
-            lyric.z = lyric.targetZ;
-        }
-        
-        // Create 3D letter objects
-        let charArray = lyric.text.split('');
-        
-        // Create a simple formation for the letters - just a straight line with good spacing
-        lyric.letters3D = charArray.map((char, index) => {
-            // Calculate spacing based on font size
-            const spacing = lyric.size * 0.9;
-            const totalWidth = spacing * (charArray.length - 1);
-            const startX = -totalWidth / 2;
-            
-            return {
-                char: char,
-                x: random(-100, 100),  // Start scattered
-                y: random(-200, 200),
-                z: random(-300, -100),
-                targetX: startX + (index * spacing),  // Properly spaced line
-                targetY: 0,
-                targetZ: 0,
-                rotX: random(TWO_PI),
-                rotY: random(TWO_PI),
-                rotZ: random(TWO_PI),
-                size: lyric.size,
-                color: lyric.color,
-                speed: random(0.05, 0.1),
-                active: false,
-                amplitude: random(5, 15)
-            };
-        });
-    }
-}
-
-function updateCamera(audioLevel) {
-    // Check if mouse is currently moving
-    if (mouseX !== pmouseX || mouseY !== pmouseY) {
-      isInteracting = true;
-      lastInteractionTime = millis();
-    }
-    // Check if interaction has timed out
-    else if (isInteracting && millis() - lastInteractionTime > interactionTimeout) {
-      isInteracting = false;
-    }
-    
-    // Normalize mouse position to -1 to 1 range
-    let targetMouseX = (mouseX / width) * 2 - 1;
-    let targetMouseY = (mouseY / height) * 2 - 1;
-    
-    // Smoothly move toward target mouse influence
-    mouseInfluenceX = lerp(mouseInfluenceX, targetMouseX, 0.05);
-    mouseInfluenceY = lerp(mouseInfluenceY, targetMouseY, 0.05);
-    
-    // Calculate base camera sway from audio
-    let cameraSwayX = sin(frameCount * 0.01) * 5 * audioLevel;
-    let cameraSwayY = cos(frameCount * 0.015) * 3 * audioLevel;
-    let cameraSwayZ = sin(frameCount * 0.007) * 17 * audioLevel;
-    
-    // Add mouse/touch influence
-    let interactionStrength = isInteracting ? 1.0 : max(0, 1 - (millis() - lastInteractionTime) / interactionTimeout);
-    
-    // Calculate final camera position
-    let finalCameraX = cameraX + cameraSwayX + (mouseInfluenceX * 500 * interactionStrength);
-    let finalCameraY = cameraY + cameraSwayY + (mouseInfluenceY * 500 * interactionStrength);
-    let finalCameraZ = cameraZ + cameraSwayZ;
-    
-    // Calculate lookAt point - also influenced by mouse/touch but less dramatically
-    let finalLookAtX = lookAtX + (mouseInfluenceX * 20 * interactionStrength);
-    let finalLookAtY = lookAtY + (mouseInfluenceY * 15 * interactionStrength);
-    
-    // Position the camera
-    mainGraphics.camera(
-      finalCameraX,
-      finalCameraY,
-      finalCameraZ,
-      finalLookAtX, finalLookAtY, lookAtZ,
-      0, 1, 0
-    );
-  }
- 
-function touchMoved() {
-    isInteracting = true;
-    lastInteractionTime = millis();
-    return false; // prevents default behavior like scrolling
-}
-
-function draw() {
-    // Save current frame for feedback
-    feedbackBuffer.image(feedbackGraphics, -width/2, -height/2);
-    feedbackGraphics.image(mainGraphics, -width/2, -height/2);
-    
-    // Analyze audio if playing
-    let audioLevel = 0;
-    let bass = 0, mid = 0, treble = 0;
-    if (song && song.isPlaying()) {
-        fft.analyze();
-        bass = fft.getEnergy("bass") / 255.0;
-        mid = fft.getEnergy("mid") / 255.0;
-        treble = fft.getEnergy("treble") / 255.0;
-        audioLevel = (bass + mid * 0.8 + treble * 0.6) / 3.0;
-        
-        // Update which lyrics are active based on current time
-        if (srtLoaded) {
-            updateActiveLyrics(song.currentTime() * 1000);
-        } else {
-            // If no SRT, cycle through lyrics every 2 seconds
-            const currentIndex = floor((millis() / 2000) % lyrics.length);
-            for (let i = 0; i < lyrics.length; i++) {
-                lyrics[i].active = (i === currentIndex);
-            }
-        }
-         // Dynamic adjustment of effects based on audio
-        // Increase feedback and glitch during high energy parts
-        feedbackStrength = 0.92 + (audioLevel * 0.07); // 0.92-0.99 range
-        glitchStrength = 1.0 + (audioLevel * bass * 2.5); // Extra emphasis on bass
-        
-        // Adjust scanlines based on mid frequencies
-        scanlineCount = 10 + (mid * 100); // 100-200 range
-    } else {
-        // When not playing, activate first lyric
         if (lyrics.length > 0) {
-            lyrics[0].active = true;
-            for (let i = 1; i < lyrics.length; i++) {
-                lyrics[i].active = false;
-            }
+            console.log("First lyric start time (ms):", lyrics[0].startTime);
+            createLyricObjects(); // Create meshes once lyrics are ready
         }
-        
-        // Animate audioLevel for preview mode
-        audioLevel = sin(millis() * 0.001) * 0.5 + 0.5;
-    }
-    
-    // Clear main graphics for new frame WITH VERY LOW OPACITY for trails
-    // This is the key to the trail effect - a barely visible background
-    // mainGraphics.background(Math.pow(bass, 4) * 100, mid * 10, treble * 30, 0);  // Very low opacity
-    mainGraphics.push();
-    mainGraphics.noStroke();
-    mainGraphics.fill(Math.pow(bass, 4) * 100, mid * 10, treble * 30, 15); // Very low opacity
-    mainGraphics.rectMode(CORNER);
-    mainGraphics.translate(-width/2, -height/2, 0);
-    mainGraphics.rect(0, 0, width, height);
-    mainGraphics.pop();
-    
-    // Set the camera perspective - use perspective() instead of ortho() for more natural 3D
-    mainGraphics.perspective(PI/3, width/height, 10, 2000);
-    
-    // Camera slightly moves/breathes based on audio - more subtle
-    // let cameraSwayX = sin(frameCount * 0.01) * 5 * audioLevel;
-    // let cameraSwayY = cos(frameCount * 0.015) * 3 * audioLevel;
-    // let cameraSwayZ = sin(frameCount * 0.007) * 7 * audioLevel;
-    
-    // // Position the camera - always facing center
-    // mainGraphics.camera(
-    //     cameraX + cameraSwayX, 
-    //     cameraY + cameraSwayY, 
-    //     cameraZ + cameraSwayZ,
-    //     lookAtX, lookAtY, lookAtZ,
-    //     0, 1, 0
-    // );
-    updateCamera(audioLevel);
-    
-    // Add ambient light
-    mainGraphics.ambientLight(100, 100, 100);
-    
-    // Add directed light that pulses with the audio
-    mainGraphics.directionalLight(
-        200 + bass * 55, 
-        180 + mid * 75, 
-        160 + treble * 95, 
-        sin(frameCount * 0.02), 
-        cos(frameCount * 0.02), 
-        -1
-    );
-    
-    // Draw 3D lyrics
-    draw3DLyrics(mainGraphics, bass, mid, treble, audioLevel);
-    
-    // If a high energy moment, trigger effect change
-    if (audioLevel > 0.65 && frameCount % 60 === 0) {
-        effectChoice = Math.floor(random(0, 5));
-    }
-    
-    // Apply enhanced feedback shader for main view
-    shader(feedbackShader);
-    feedbackShader.setUniform('prevFrame', feedbackGraphics);
-    feedbackShader.setUniform('currentFrame', mainGraphics);
-    feedbackShader.setUniform('feedbackAmount', feedbackStrength);
-    feedbackShader.setUniform('time', millis() * 0.001);
-    rect(-width/2, -height/2, width, height);
-    
-    // Apply enhanced glitch shader for final output
-    shader(glitchShader);
-    glitchShader.setUniform('tex0', mainGraphics);
-    glitchShader.setUniform('time', millis() * 0.001);
-    glitchShader.setUniform('intensity', Math.pow(audioLevel, 2.5) * glitchIntensity * glitchStrength);
-    glitchShader.setUniform('audioLevel', audioLevel);
-    rect(-width/2, -height/2, width, height);
-}
-
-function applyMouseScaleEffect(letter, graphics) {
-    // We'll use a simpler approach that doesn't require 3D to screen conversion
-    
-    // Calculate normalized mouse position (0 to 1)
-    const mouseNormX = mouseX / width;
-    const mouseNormY = mouseY / height;
-    
-    // Convert normalized mouse position to -1 to 1 range for 3D space influence
-    const mouseSpace3DX = (mouseNormX * 2 - 1) * 300; // Scale to reasonable 3D space
-    const mouseSpace3DY = (mouseNormY * 2 - 1) * 300;
-    
-    // Calculate distance in 3D space (ignoring Z for simplicity)
-    // This simulates a "beam" from the mouse position into the scene
-    const dx = letter.x - mouseSpace3DX;
-    const dy = letter.y - mouseSpace3DY;
-    const distance = sqrt(dx*dx + dy*dy);
-    
-    // Add depth-based scaling (letters closer to camera can be affected more)
-    // Map letter Z position to a 0-1 range where 1 is closest to camera
-    const depthFactor = map(letter.z, -500, 100, 0.2, 1, true); 
-    
-    // Create a proximity effect - closer to mouse = bigger scale
-    const maxDistance = 120; // Maximum effective distance in 3D space
-    const minScale = 1.0;    // Minimum scale factor
-    const maxScale = 4.5;    // Maximum scale factor
-    
-    // Calculate scale based on proximity
-    let proximityScale = minScale;
-    if (distance < maxDistance) {
-      // Inverse relationship - closer = bigger
-      const influence = (1.0 - (distance / maxDistance)) * depthFactor;
-      // Apply easing function for smoother effect
-      const easedInfluence = influence * influence * (3 - 2 * influence); // Smoothstep
-      proximityScale = minScale + (maxScale - minScale) * easedInfluence;
-    }
-    
-    return proximityScale;
-  }
-
-function draw3DLyrics(graphics, bass, mid, treble, audioLevel) {
-    graphics.push();
-    
-    // Draw each active lyric in 3D space
-    for (let lyric of lyrics) {
-        if (!lyric.active) continue;
-        
-        // Move lyric toward target position
-        lyric.x = lerp(lyric.x, lyric.targetX, 0.05);
-        lyric.y = lerp(lyric.y, lyric.targetY, 0.05);
-        lyric.z = lerp(lyric.z, lyric.targetZ, 0.05);
-        
-        graphics.push();
-        
-        // Position the lyric in 3D space with slight audio-reactive movement
-        let wordSway = sin(frameCount * 0.02) * 5 * audioLevel;
-        let wordBob = cos(frameCount * 0.03) * 3 * audioLevel;
-        graphics.translate(lyric.x + wordSway, lyric.y + wordBob, lyric.z);
-        
-        // Apply subtle rotation to the whole lyric
-        graphics.rotateX(lyric.rotX * frameCount * 0.0005);
-        graphics.rotateY(lyric.rotY * frameCount * 0.0005);
-        graphics.rotateZ(lyric.rotZ * frameCount * 0.0005);
-        
-        // Update letter positions - simple wave motion
-        for (let i = 0; i < lyric.letters3D.length; i++) {
-            const letter = lyric.letters3D[i];
-            letter.active = lyric.active;
-            
-            // Add some wave motion to the letters
-            letter.targetY += sin((frameCount + i * 4) * 0.05) * letter.amplitude * audioLevel * 0.5;
-            
-            // Move letters to their positions
-            letter.x = lerp(letter.x, letter.targetX, letter.speed * 2.0);
-            letter.y = lerp(letter.y, letter.targetY, letter.speed * 2.0);
-            letter.z = lerp(letter.z, letter.targetZ, letter.speed * 2.0);
-            
-            // Gradually stabilize rotation
-            letter.rotX = lerp(letter.rotX, 0, 0.1);
-            letter.rotY = lerp(letter.rotY, 0, 0.1);
-            letter.rotZ = lerp(letter.rotZ, 0, 0.1);
-            
-            // Reset targetY after applying to prevent accumulation
-            letter.targetY = 0;
-        }
-        
-        // Draw letters in back-to-front order for proper depth rendering
-        let renderOrder = [...lyric.letters3D].map((letter, index) => ({letter, index}))
-                                             .sort((a, b) => b.letter.z - a.letter.z);
-        
-        // Draw each letter in depth-sorted order
-        for (let item of renderOrder) {
-            const letter = item.letter;
-            drawLetter3D(graphics, letter, bass, mid, treble, audioLevel);
-        }
-        
-        graphics.pop();
-    }
-    
-    graphics.pop();
-}
-
-
-function updateLetterPositions(letter, index, totalLetters, audioLevel, effectType) {
-    // Calculate spacing based on total letters to keep centered
-    let spacing = 25;  // Increased base spacing
-    if (totalLetters > 15) {
-        spacing = 350 / totalLetters;  // Adjust spacing for long texts
-    }
-    
-    // Store the original index to maintain letter order
-    letter.originalIndex = index;
-    
-    // Declare angle variable at the beginning to avoid reference errors
-    let angle = 0;
-    let radius = 0;
-    
-    // Update letter movement based on effect type - keeping all formations centered
-    switch (effectType) {
-        case 0: // Line formation (similar to 2D original)
-            letter.targetX = (index - totalLetters/2) * spacing;
-            letter.targetY = sin((frameCount + index * 4) * 0.05) * letter.amplitude * audioLevel * 0.5; // Reduced oscillation
-            letter.targetZ = 0;
-            break;
-            
-        case 1: // Circle formation - centered
-            angle = map(index, 0, totalLetters, 0, TWO_PI);
-            radius = 80 + sin(frameCount * 0.03) * 10 * audioLevel; // Smaller radius, slower movement
-            letter.targetX = cos(angle) * radius;
-            letter.targetY = sin(angle) * radius;
-            letter.targetZ = 0;
-            break;
-            
-        case 2: // Wave formation - centered
-            letter.targetX = (index - totalLetters/2) * spacing;
-            letter.targetY = sin(frameCount * 0.03 + index * 0.2) * 20 * (1 + audioLevel * 0.5); // Reduced amplitude
-            letter.targetZ = cos(frameCount * 0.03 + index * 0.2) * 20 * (1 + audioLevel * 0.5); // Reduced amplitude
-            break;
-            
-        case 3: // 3D helix - centered along Z axis
-            angle = map(index, 0, totalLetters, 0, TWO_PI * 1.5);
-            radius = 50; // Smaller radius
-            letter.targetX = cos(angle + frameCount * 0.005) * radius;  // Slower rotation
-            letter.targetY = sin(angle + frameCount * 0.005) * radius;
-            letter.targetZ = (index - totalLetters/2) * 8; // Reduced Z spread
-            break;
-            
-        case 4: // Pulsing grid - still centered
-            let cols = ceil(sqrt(totalLetters));
-            let row = floor(index / cols);
-            let col = index % cols;
-            let gridSize = min(width, height) * 0.2; // Smaller grid
-            let cellSize = gridSize / max(cols, 1);
-            
-            letter.targetX = (col - cols/2 + 0.5) * cellSize;
-            letter.targetY = (row - cols/2 + 0.5) * cellSize;
-            letter.targetZ = sin(frameCount * 0.03 + index * 0.1) * 20 * audioLevel; // Reduced Z movement
-            break;
-    }
-    
-    // Faster movement to target position - helps keep letters on screen
-    letter.x = lerp(letter.x, letter.targetX, letter.speed * 2.0);
-    letter.y = lerp(letter.y, letter.targetY, letter.speed * 2.0);
-    letter.z = lerp(letter.z, letter.targetZ, letter.speed * 2.0);
-    
-    // Significantly reduced rotation - letters stay more upright
-    letter.rotX = lerp(letter.rotX, 0, 0.1);  // Gradually revert to 0 rotation
-    letter.rotY = lerp(letter.rotY, 0, 0.1);
-    letter.rotZ = lerp(letter.rotZ, 0, 0.1);
-}
-
-function drawLetter3D(graphics, letter, bass, mid, treble, audioLevel) {
-    if (letter.char === ' ') return; // Skip rendering spaces
-    
-    graphics.push();
-    
-    // Position the letter
-    graphics.translate(letter.x, letter.y, letter.z);
-    
-    // Apply minimal rotation for stability
-    graphics.rotateX(letter.rotX * 0.2);  // Very minimal rotation
-    graphics.rotateY(letter.rotY * 0.2);
-    graphics.rotateZ(letter.rotZ * 0.2);
-    
-    // Very minimal audio reactive sizing - much more subtle
-    let sizeMod = 1.5;
-    sizeMod *= applyMouseScaleEffect(letter, graphics);
-    if (letter.char === 'A' || letter.char === 'E' || letter.char === 'I' || letter.char === 'O' || letter.char === 'U') {
-        sizeMod += bass * 0.15; // Reduced from 0.2
-    } else if (letter.char === ' ') {
-        sizeMod += mid * 0.05; // Reduced from 0.1
-    } else {
-        sizeMod += treble * 0.1; // Reduced from 0.15
-    }
-    
-    // Create a color for the letter with some audio reactivity - brighter colors
-    let r = min(255, red(color(letter.color)) + bass * 80);
-    let g = min(255, green(color(letter.color)) + mid * 80);
-    let b = min(255, blue(color(letter.color)) + treble * 80);
-    
-    // Add minimal pulsing based on audio
-    let pulseFactor = 1 + sin(frameCount * 0.08) * 0.05 * audioLevel; // Reduced from 0.1
-    
-    // Draw the actual 3D letter
-    graphics.push();
-    graphics.scale(sizeMod * pulseFactor * 0.95); // Keep small scale
-    
-    // Set text properties
-    graphics.textSize(letter.size);
-    graphics.textAlign(CENTER, CENTER);
-    
-    // Create manual stroke effect by drawing the text multiple times in red
-    let strokeWeight = 4; // Adjust for thicker/thinner stroke
-    let strokeColor = color(255, 0, 0); // Pure red stroke
-
-    // First draw the stroke by drawing the text multiple times with slight offsets
-    graphics.fill(red(strokeColor), green(strokeColor), blue(strokeColor));
-    // Draw multiple offset copies to create outline effect
-    for (let i = -strokeWeight; i <= strokeWeight; i += strokeWeight) {
-        for (let j = -strokeWeight; j <= strokeWeight; j += strokeWeight) {
-            if (i === 0 && j === 0) continue; // Skip the center position
-            graphics.text(letter.char, i, j, 0);
-        }
-    }
-
-    // Then draw the main letter on top
-    graphics.fill(r, g, b, 255);  // Original fill color
-    graphics.text(letter.char, 0, 0, 0);
-    
-    // Optional: Draw extruded sides for more 3D feel
-    let depth = 1 + audioLevel * 5; // Reduced from 10 + audioLevel * 10
-    
-    // Draw back face (slightly darker)
-    graphics.push();
-    graphics.translate(0, 0, -depth);
-    
-    // Add stroke to the back face too
-    graphics.fill(red(strokeColor) * 0.7, green(strokeColor) * 0.7, blue(strokeColor) * 0.7);
-    for (let i = -strokeWeight; i <= strokeWeight; i += strokeWeight) {
-        for (let j = -strokeWeight; j <= strokeWeight; j += strokeWeight) {
-            if (i === 0 && j === 0) continue;
-            graphics.text(letter.char, i, j, 0);
-        }
-    }
-    
-    // Then the fill
-    graphics.fill(r * 0.7, g * 0.7, b * 0.7, 255);
-    graphics.text(letter.char, 0, 0, 0);
-    
-    graphics.pop();
-    
-    graphics.pop();
-    graphics.pop();
-}
-
-function updateActiveLyrics(currentTime) {
-    // Transition variables
-    const fadeInTime = 150; // ms
-    const fadeOutTime = 150; // ms
-    
-    for (let lyric of lyrics) {
-        const wasActive = lyric.active;
-        
-        // Add fade in/out buffer to make transitions smoother
-        const isInFadeInZone = (currentTime >= lyric.startTime - fadeInTime && currentTime < lyric.startTime);
-        const isInActiveZone = (currentTime >= lyric.startTime && currentTime <= lyric.endTime);
-        const isInFadeOutZone = (currentTime > lyric.endTime && currentTime <= lyric.endTime + fadeOutTime);
-        
-        // Set active based on time including transition zones
-        lyric.active = isInFadeInZone || isInActiveZone || isInFadeOutZone;
-        
-        if (lyric.active && !wasActive) {
-            // When a lyric becomes active, give it a position away from the center
-            lyric.targetX = random(-150, 150); 
-            lyric.targetY = random(-100, 100);
-            lyric.targetZ = random(-250, -50);
-            
-            // Reset letter positions for a clean entrance
-            for (let letter of lyric.letters3D) {
-                // Start letters scattered for a dramatic entrance
-                letter.x = random(-300, 300);
-                letter.y = random(-200, 200);
-                letter.z = random(-400, -200);
-                
-                // Fresh random rotation
-                letter.rotX = random(TWO_PI);
-                letter.rotY = random(TWO_PI);
-                letter.rotZ = random(TWO_PI);
-                
-                // Faster movement during entrance
-                letter.speed = random(0.05, 0.1);
-            }
-        }
+    } catch (e) {
+        console.error("Error loading SRT:", e);
     }
 }
 
-
+// --- SRT Parsing (Reuse your functions) ---
 function parseSRT(srtContent) {
     const parsedLyrics = [];
     const blocks = srtContent.trim().split('\n\n');
-    
+
     for (const block of blocks) {
         const lines = block.split('\n');
         if (lines.length < 3) continue;
-        
-        // Extract the time codes (format: 00:00:00,000 --> 00:00:00,000)
+
         const timeCode = lines[1];
         const times = timeCode.split(' --> ');
-        
         if (times.length !== 2) continue;
-        
-        // Convert timestamps to milliseconds
+
         const startTime = timeToMilliseconds(times[0]);
         const endTime = timeToMilliseconds(times[1]);
-        
-        // Get all text lines (may be multiple lines per subtitle)
         const text = lines.slice(2).join(' ');
-        
-        // Generate brighter, more saturated colors for better visibility
         const randomColor = getBrightColor();
-        
+
+        // Add placeholders for Three.js objects
         parsedLyrics.push({
             text: text,
             startTime: startTime,
             endTime: endTime,
             active: false,
-            color: randomColor,
-            size: random(40, 70), // Slightly smaller size range for legibility
-            x: 0,
-            y: 0,
-            z: 0,
-            targetX: 0,  // Start centered
-            targetY: 0,
-            targetZ: 0,
-            rotX: random(-0.1, 0.1),  // Smaller rotation values
-            rotY: random(-0.1, 0.1),
-            rotZ: random(-0.1, 0.1),
-            speed: random(0.05, 0.1),
-            letters3D: []  // Will be populated in randomizeLyricPositions3D
+            color: randomColor, // Keep color info
+            size: THREE.MathUtils.randInt(40, 70), // Keep size info (can influence plane scale)
+            // Add properties for Three.js objects
+            threeGroup: null, // Will hold THREE.Group for the line
+            letterMeshes: [], // Will hold individual letter meshes
+            // Add properties for animation targets (similar to p5 version)
+            targetX: THREE.MathUtils.randFloat(-150, 150),
+            targetY: THREE.MathUtils.randFloat(-100, 100),
+            targetZ: THREE.MathUtils.randFloat(-250, -50),
+            // Initial position can be target or random (like p5)
+            currentX: THREE.MathUtils.randFloat(-150, 150), // Example: Start scattered
+            currentY: THREE.MathUtils.randFloat(-100, 100),
+            currentZ: THREE.MathUtils.randFloat(-250, -50),
+            // Add rotation targets/current if needed
         });
     }
-    
     return parsedLyrics;
 }
 
 function timeToMilliseconds(timeString) {
-    // Format: 00:00:00,000 or 00:00:00.000
     timeString = timeString.replace(',', '.');
-    const [time, milliseconds] = timeString.split('.');
-    const [hours, minutes, seconds] = time.split(':').map(Number);
-    
-    return (hours * 3600 + minutes * 60 + seconds) * 1000 + parseInt(milliseconds);
+    const parts = timeString.split(/[:.]/); // Split by : or .
+    if (parts.length !== 4) return 0;
+    const [hours, minutes, seconds, milliseconds] = parts.map(Number);
+    return (hours * 3600 + minutes * 60 + seconds) * 1000 + milliseconds;
 }
 
 function getBrightColor() {
-    // Brighter, more saturated colors for better visibility
-    const colors = [
-        "#FF5733", // Bright Red-Orange
-        "#33FFF5", // Bright Cyan
-        "#FFFC33", // Bright Yellow
-        "#FF33F5", // Bright Pink
-        "#33FF57", // Bright Green
-        "#5733FF", // Bright Blue-Purple
-        "#FF3366", // Bright Pink-Red
-        "#66FF33", // Bright Lime
-        "#33BBFF", // Bright Sky Blue
-        "#FF9933"  // Bright Orange
-    ];
-    return colors[Math.floor(random(colors.length))];
+    const colors = ["#FF5733", "#33FFF5", "#FFFC33", "#FF33F5", "#33FF57", "#5733FF", "#FF3366", "#66FF33", "#33BBFF", "#FF9933"];
+    return colors[Math.floor(Math.random() * colors.length)];
 }
 
-// Handle window resizing
-function windowResized() {
-    resizeCanvas(windowWidth, windowHeight);
-    mainGraphics.resizeCanvas(width, height);
-    feedbackGraphics.resizeCanvas(width, height);
-    feedbackBuffer.resizeCanvas(width, height); // Add this line
+// --- Lyric Object Creation (CanvasTexture Approach) ---
+function createLyricObjects() {
+    lyrics.forEach(lyric => {
+        const lineGroup = new THREE.Group();
+        lineGroup.position.set(lyric.currentX, lyric.currentY, lyric.currentZ);
+
+        const charArray = lyric.text.split('');
+        let currentXOffset = 0;
+        const meshes = [];
+
+        // Calculate total width roughly first for centering
+        let totalWidth = 0;
+        charArray.forEach(char => {
+            if (char === ' ') {
+                totalWidth += FONT_SIZE * LETTER_SPACING_FACTOR * 0.5; // Space width
+            } else {
+                totalWidth += FONT_SIZE * LETTER_SPACING_FACTOR; // Estimate letter width
+            }
+        });
+        currentXOffset = -totalWidth / 2;
+
+        charArray.forEach((char, index) => {
+            if (char === ' ') {
+                // Just advance the offset for spaces
+                currentXOffset += FONT_SIZE * LETTER_SPACING_FACTOR * 0.5;
+                return;
+            }
+
+            const { mesh, width: charWidth } = createLetterMesh(char, FONT_SIZE, lyric.color); // Use lyric.size? Maybe adjust later
+
+            // Position letter relative to the group center
+            mesh.position.x = currentXOffset + charWidth / 2;
+            // mesh.position.y = 0; // Set animation target later
+            // mesh.position.z = 0; // Set animation target later
+
+            // Store initial random positions relative to group for scatter effect
+            mesh.userData.initialX = THREE.MathUtils.randFloat(-100, 100);
+            mesh.userData.initialY = THREE.MathUtils.randFloat(-200, 200);
+            mesh.userData.initialZ = THREE.MathUtils.randFloat(-300, -100);
+            mesh.position.set(mesh.userData.initialX, mesh.userData.initialY, mesh.userData.initialZ);
+
+            // Store animation targets relative to group
+            mesh.userData.targetX = currentXOffset + charWidth / 2;
+            mesh.userData.targetY = 0;
+            mesh.userData.targetZ = 0; // Add Z offset later if needed for Z-fighting
+
+            // Add initial rotation if needed
+            mesh.rotation.set(
+                Math.random() * Math.PI * 2,
+                Math.random() * Math.PI * 2,
+                Math.random() * Math.PI * 2
+            );
+            mesh.userData.targetRotX = 0;
+            mesh.userData.targetRotY = 0;
+            mesh.userData.targetRotZ = 0;
+
+
+            lineGroup.add(mesh);
+            meshes.push(mesh);
+
+            currentXOffset += charWidth; // Advance offset by character width
+        });
+
+        lyric.threeGroup = lineGroup;
+        lyric.letterMeshes = meshes;
+        lineGroup.visible = false; // Start invisible
+        scene.add(lineGroup);
+    });
+    console.log("Created Three.js objects for lyrics.");
 }
+
+function createLetterMesh(char, size, color = LETTER_COLOR) {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const font = `${size}px ${FONT_FACE}`;
+    ctx.font = font;
+
+    // Measure text
+    const metrics = ctx.measureText(char);
+    let textWidth = metrics.width;
+    // Canvas texture sizing - make slightly larger than text, power of 2 often preferred but not strictly necessary
+    const canvasWidth = THREE.MathUtils.ceilPowerOfTwo(textWidth + size * 0.2); // Add padding
+    const canvasHeight = THREE.MathUtils.ceilPowerOfTwo(size * 1.2); // Estimate height
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+
+    // Redraw text centered on resized canvas
+    ctx.font = font; // Set font again after resize
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(char, canvasWidth / 2, canvasHeight / 2);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+
+    // Geometry - Use plane size based on canvas aspect ratio or text metrics
+    const planeHeight = size * 1.0; // Match font size roughly
+    const planeWidth = planeHeight * (canvasWidth / canvasHeight);
+    const geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
+
+    // Material
+    const material = new THREE.MeshBasicMaterial({
+        map: texture,
+        color: 0xffffff, // Let texture provide color
+        transparent: true,
+        // alphaTest: 0.1, // Discard fully transparent pixels
+        side: THREE.DoubleSide, // Render both sides
+        depthWrite: true // Important for correct depth sorting if overlapping! Adjust if needed.
+    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+
+    // Return mesh and its calculated width for spacing
+    return { mesh, width: planeWidth };
+}
+
+
+// --- Controls ---
+function setupControls() {
+    const playButton = document.getElementById('play-btn');
+    const pauseButton = document.getElementById('pause-btn');
+
+    // Make the event listener async to use await
+    playButton.addEventListener('click', async () => {
+        try {
+            // 1. Ensure AudioContext is running (await its resumption)
+            if (listener.context.state === 'suspended') {
+                console.log("AudioContext suspended, attempting resume...");
+                await listener.context.resume(); // *** IMPORTANT: Wait here ***
+                console.log("AudioContext resumed, state:", listener.context.state);
+            }
+
+            // 2. Check if sound buffer is loaded AND context is now running
+            if (sound && sound.buffer && listener.context.state === 'running') {
+
+                if (!sound.isPlaying) {
+                    // 3. Calculate start offset (jumping to first lyric)
+                    const firstLyricStartTimeMs = lyrics[0]?.startTime ?? 0; // Default to 0 if no lyrics
+                    
+                    // Initialize our custom audio tracking
+                    audioOffset = firstLyricStartTimeMs / 1000.0;
+                    
+                    // Set offset in Three.js audio
+                    sound.offset = audioOffset;
+                    
+                    // Play the sound
+                    sound.play();
+                    
+                    // Record the play timestamp and set paused state
+                    audioStartTimestamp = performance.now() / 1000;
+                    audioPaused = false;
+                    
+                    console.log(`Playing from offset: ${audioOffset.toFixed(3)}s, timestamp: ${audioStartTimestamp.toFixed(3)}s`);
+                } else {
+                    console.log("Audio already playing.");
+                }
+
+            } else if (!sound.buffer) {
+                console.error("Play clicked, but sound buffer not ready.");
+            } else if (listener.context.state !== 'running') {
+                console.error("Play clicked, but AudioContext is not running.");
+            }
+        } catch (err) {
+            console.error("Error during play button click:", err);
+        }
+    }); // End playButton listener
+
+    pauseButton.addEventListener('click', () => {
+        if (sound && sound.isPlaying) {
+            // Record the current playback time before pausing
+            const currentPlaybackTime = getCurrentPlaybackTime();
+            
+            // Pause the audio
+            sound.pause();
+            
+            // Update our tracking variables
+            audioOffset = currentPlaybackTime;
+            lastPauseTime = performance.now() / 1000;
+            audioPaused = true;
+            
+            console.log("Paused at offset:", audioOffset);
+        }
+    });
+} // End setupControls
+
+// Custom function to get accurate playback time
+function getCurrentPlaybackTime() {
+    if (audioPaused) {
+        return audioOffset; // Return the stored offset when paused
+    } else {
+        // Calculate current time based on when we started playing plus the initial offset
+        const elapsedSinceStart = (performance.now() / 1000) - audioStartTimestamp;
+        return audioOffset + elapsedSinceStart;
+    }
+}
+
+// --- Update & Animation ---
+
+function updateActiveLyricsThreeJS(currentTimeSeconds) {
+    const currentTimeMs = currentTimeSeconds * 1000;
+    const fadeInTime = 150;
+    const fadeOutTime = 150;
+
+    lyrics.forEach(lyric => {
+        const wasActive = lyric.active;
+        const isInFadeInZone = (currentTimeMs >= lyric.startTime - fadeInTime && currentTimeMs < lyric.startTime);
+        const isInActiveZone = (currentTimeMs >= lyric.startTime && currentTimeMs <= lyric.endTime);
+        const isInFadeOutZone = (currentTimeMs > lyric.endTime && currentTimeMs <= lyric.endTime + fadeOutTime);
+
+        lyric.active = isInFadeInZone || isInActiveZone || isInFadeOutZone;
+
+        if (lyric.threeGroup) {
+            lyric.threeGroup.visible = lyric.active; // Make group visible/invisible
+        }
+
+        if (lyric.active && !wasActive) {
+            // Reset positions/rotations for dramatic entrance effect? Or let lerp handle it?
+            // Option 1: Reset scatter (like p5 version)
+            /*
+            lyric.letterMeshes.forEach(mesh => {
+                mesh.position.set(mesh.userData.initialX, mesh.userData.initialY, mesh.userData.initialZ);
+                 mesh.rotation.set(
+                    Math.random() * Math.PI * 2,
+                    Math.random() * Math.PI * 2,
+                    Math.random() * Math.PI * 2
+                 );
+            });
+            */
+           // Option 2: Just ensure lerp targets are set (handled in animate loop)
+           // Set new group target position on activation
+           lyric.targetX = THREE.MathUtils.randFloat(-150, 150);
+           lyric.targetY = THREE.MathUtils.randFloat(-100, 100);
+           lyric.targetZ = THREE.MathUtils.randFloat(-250, -50);
+        }
+    });
+}
+
+
+function animate() {
+    requestAnimationFrame(animate); // The render loop
+
+    const deltaTime = clock.getDelta();
+    const elapsedTime = clock.getElapsedTime();
+
+    let audioLevel = 0;
+    let bass = 0, mid = 0, treble = 0;
+
+    if (analyser && sound.isPlaying) {
+        const freqData = analyser.getFrequencyData(); // Array of byte values (0-255)
+
+        // Approximate p5.js getEnergy ranges (adjust indices based on FFT_SIZE)
+        const bassEnd = Math.floor(FFT_SIZE * 0.1); // ~0-100 Hz if sample rate is 44100/48000
+        const midEnd = Math.floor(FFT_SIZE * 0.4); // ~100-1kHz
+        const trebleEnd = Math.floor(FFT_SIZE / 2); // Upper half (nyquist)
+
+        let bassSum = 0;
+        for (let i = 1; i < bassEnd; i++) bassSum += freqData[i]; // Skip DC offset (index 0)
+        bass = (bassSum / (bassEnd - 1) / 255.0) * 2.0; // Normalize and scale up a bit
+
+        let midSum = 0;
+        for (let i = bassEnd; i < midEnd; i++) midSum += freqData[i];
+        mid = (midSum / (midEnd - bassEnd) / 255.0) * 2.0; // Normalize and scale
+
+        let trebleSum = 0;
+        for (let i = midEnd; i < trebleEnd; i++) trebleSum += freqData[i];
+        treble = (trebleSum / (trebleEnd - midEnd) / 255.0) * 2.0; // Normalize and scale
+
+        audioLevel = (analyser.getAverageFrequency() / 255.0); // Or calculate based on bass/mid/treble
+
+        // Get the current playback time using our custom tracking function
+        const playbackTime = getCurrentPlaybackTime();
+        
+        // Log current playback time (less frequently to avoid console spam)
+        if (Math.floor(playbackTime * 10) % 10 === 0) {
+            console.log(`Current Playback Time: ${playbackTime.toFixed(3)}s`);
+        }
+        
+        // Update active lyrics based on our custom playback time
+        updateActiveLyricsThreeJS(playbackTime);
+    } else {
+        // Preview mode animation?
+        audioLevel = Math.sin(elapsedTime * 2) * 0.5 + 0.5; // Simple pulse
+        bass = mid = treble = audioLevel; // Link them for preview
+        // Activate first lyric for preview
+        if (lyrics.length > 0) {
+             lyrics.forEach((lyric, i) => lyric.active = (i === 0));
+             if(lyrics[0].threeGroup) lyrics[0].threeGroup.visible = true;
+        }
+    }
+
+    // --- Update objects ---
+    lyrics.forEach(lyric => {
+        if (lyric.active && lyric.threeGroup) {
+            // Lerp group position
+            lyric.currentX = THREE.MathUtils.lerp(lyric.currentX, lyric.targetX, 0.05);
+            lyric.currentY = THREE.MathUtils.lerp(lyric.currentY, lyric.targetY, 0.05);
+            lyric.currentZ = THREE.MathUtils.lerp(lyric.currentZ, lyric.targetZ, 0.05);
+            lyric.threeGroup.position.set(lyric.currentX, lyric.currentY, lyric.currentZ);
+            // Add group rotation sway? (Like p5 version)
+
+            // Update individual letters within the group
+            lyric.letterMeshes.forEach((mesh, index) => {
+                // --- Adapt updateLetterPositions logic here ---
+                // Example: Lerp towards target position relative to group
+                const moveSpeed = 0.08; // Adjust speed
+                mesh.position.lerp(new THREE.Vector3(mesh.userData.targetX, mesh.userData.targetY, mesh.userData.targetZ), moveSpeed);
+
+                // Example: Lerp rotation back to target (usually 0,0,0)
+                const rotSpeed = 0.1;
+                 // Use Quaternions for smoother rotation lerping
+                 const targetQuaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(mesh.userData.targetRotX, mesh.userData.targetRotY, mesh.userData.targetRotZ));
+                 mesh.quaternion.slerp(targetQuaternion, rotSpeed);
+
+
+                // --- Adapt drawLetter3D reactive logic here ---
+                // Example: Scale based on audio/mouse
+                let baseScale = 1.0;
+                // let sizeMod = calculateSizeMod(letter.char, bass, mid, treble); // Adapt from p5
+                // let pulseFactor = 1 + Math.sin(elapsedTime * 5 + index * 0.5) * 0.05 * audioLevel;
+                // mesh.scale.setScalar(baseScale * sizeMod * pulseFactor);
+
+                 // Example: Update color? (More complex - needs vertex colors or changing material)
+            });
+        }
+    });
+
+    // --- Update camera ---
+    // Adapt updateCamera logic from p5 to modify Three.js camera.position/lookAt
+    // updateCameraThreeJS(audioLevel, elapsedTime);
+
+
+    // --- Render ---
+    // For now, render directly to screen. Post-processing comes next.
+    renderer.render(scene, camera);
+
+    // Optional: Update OrbitControls if used
+    // controls.update();
+}
+
+// --- Event Handlers ---
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// --- Run ---
+init();
