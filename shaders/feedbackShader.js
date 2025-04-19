@@ -1,4 +1,4 @@
-// Feedback shader for trail effects
+// Fix flipping in the vertex shader
 const feedbackVertexShader = `
     attribute vec3 aPosition;
     attribute vec2 aTexCoord;
@@ -8,8 +8,8 @@ const feedbackVertexShader = `
     void main() {
         vTexCoord = aTexCoord;
         
-        // Fix for p5.js WEBGL Y-axis flip
-        vTexCoord.y = 1.0 - vTexCoord.y;
+        // Remove the Y-axis flip that was causing orientation issues
+        // vTexCoord.y = 1.0 - vTexCoord.y; <- Remove this line
         
         vec4 positionVec4 = vec4(aPosition, 1.0);
         positionVec4.xy = positionVec4.xy * 2.0 - 1.0;
@@ -17,6 +17,8 @@ const feedbackVertexShader = `
     }
 `;
 
+// Update in feedbackShader.js
+// Improved feedback shader with better visibility
 const feedbackFragmentShader = `
     precision mediump float;
     
@@ -28,45 +30,33 @@ const feedbackFragmentShader = `
     uniform float time;
     uniform float audioLevel;
 
-    // Simple checkerboard without any fancy effects
-    // This isolates the checkerboard pattern to see if that's working
-    vec4 simpleCheckerboard(vec2 uv) {
-        float checkerSize = 30.0; // Very large checkers
-        vec2 checkPos = floor(uv * checkerSize);
-        float checker = mod(checkPos.x + checkPos.y, 2.0);
-        
-        // Pure black and white
-        vec3 color = vec3(checker);
-        return vec4(color, 1.0);
-    }
-
     void main() {
         vec2 uv = vTexCoord;
         
-        // Basic feedback mix
+        // Sample current frame
         vec4 current = texture2D(currentFrame, uv);
-        vec4 prev = texture2D(prevFrame, uv); // No distortion for diagnostic
-
-        // Mix the current frame and previous frame
-        float fadeSpeed = 0.9; // High value = longer trails
-        vec4 feedbackMix = mix(current, prev, fadeSpeed);
         
-        // Get the checkerboard pattern
-        vec4 checker = simpleCheckerboard(uv);
+        // Sample previous frame with minimal distortion
+        vec2 distortedUV = uv + vec2(
+            sin(uv.y * 10.0 + time) * 0.001,
+            cos(uv.x * 10.0 + time) * 0.001
+        );
+        vec4 prev = texture2D(prevFrame, distortedUV);
         
-        // For diagnostics, let's clearly see where different parts affect the output
-        // based on screen position
-        if (uv.x < 0.33) {
-            // Left third: just show checkerboard
-            gl_FragColor = checker;
-        } 
-        else if (uv.x < 0.66) {
-            // Middle third: mix checkerboard with current frame 
-            gl_FragColor = mix(checker, current, 0.5);
-        }
-        else {
-            // Right third: normal feedback with a bit of checkerboard
-            gl_FragColor = mix(feedbackMix, checker, 0.3);
-        }
+        // Use much lower feedback amount to prevent darkness buildup
+        // 0.6-0.85 range will keep things visible while still showing trails
+        float fade = clamp(feedbackAmount * 0.8, 0.6, 0.85);
+        
+        // Significant brightness boost for the feedback
+        prev.rgb *= 1.3;
+        
+        // Mix with priority on keeping current frame visible
+        vec4 result = mix(current, prev, fade);
+        
+        // Additional brightness boost
+        result.rgb *= 1.5;
+        
+        // Output the final color
+        gl_FragColor = result;
     }
 `;
