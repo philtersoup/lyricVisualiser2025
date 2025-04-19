@@ -428,59 +428,84 @@ function createLyricObjects() {
     console.log("Created Three.js objects for lyrics.");
 }
 
-// Updated createLetterMesh function to use the loaded font
+// Updated createLetterMesh function to add a stroke
 function createLetterMesh(char, size, color = LETTER_COLOR) {
     // Create a canvas element to draw the text
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
-    
-    // Set font size and font family (now using the loaded custom font)
+
+    // Define stroke thickness - adjust this value for desired thickness
+    const strokeWidth = 8; // "Thick" stroke width
+
+    // Set font size and font family (using the loaded custom font)
     const font = `${size}px ${FONT_FACE}`;
     ctx.font = font;
-    
-    // Measure the text to determine canvas size
+
+    // Measure the text to determine canvas size, considering the stroke
     const metrics = ctx.measureText(char);
     let textWidth = metrics.width;
-    
-    // Create a canvas with power-of-two dimensions for better texture performance
-    const canvasWidth = THREE.MathUtils.ceilPowerOfTwo(textWidth + size * 0.2);
-    const canvasHeight = THREE.MathUtils.ceilPowerOfTwo(size * 1.2);
-    
+
+    // Estimate required canvas size, adding padding for the stroke width
+    // Power-of-two dimensions are often good for textures
+    const padding = strokeWidth * 2; // Add padding on both sides
+    const canvasWidth = THREE.MathUtils.ceilPowerOfTwo(textWidth + padding);
+    // Ensure height accommodates font ascent/descent + stroke
+    const canvasHeight = THREE.MathUtils.ceilPowerOfTwo(size * 1.2 + padding);
+
     canvas.width = canvasWidth;
     canvas.height = canvasHeight;
-    
-    // Redraw with the properly sized canvas
+
+    // --- Drawing on Canvas (Stroke First, then Fill) ---
+
+    // Recalculate font settings for the resized canvas
     ctx.font = font;
-    ctx.fillStyle = color;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    
-    // Log font being used (helpful for debugging)
-    if (char === 'A' || char === 'a') {
-        console.log(`Drawing character '${char}' with font: ${font}`);
-    }
-    
-    // Draw the text in the center of the canvas
-    ctx.fillText(char, canvasWidth / 2, canvasHeight / 2);
-    
+
+    // Stroke settings
+    ctx.strokeStyle = 'red'; // Stroke color
+    ctx.lineWidth = strokeWidth; // Stroke thickness
+    ctx.lineJoin = 'round'; // Makes corners look smoother
+    ctx.miterLimit = 2; // Affects sharp corners
+
+    // Draw the stroke (outline) first
+    // Position text in the center of the larger canvas
+    const centerX = canvasWidth / 2;
+    const centerY = canvasHeight / 2;
+    ctx.strokeText(char, centerX, centerY);
+
+    // Fill settings
+    ctx.fillStyle = color; // Use the original letter color for the fill
+
+    // Draw the filled text on top of the stroke
+    ctx.fillText(char, centerX, centerY);
+
+    // --- Create Three.js Objects ---
+
     // Create a texture from the canvas
     const texture = new THREE.CanvasTexture(canvas);
     texture.needsUpdate = true;
-    
-    // Create a plane with the texture
-    const planeHeight = size * 1.0;
+
+    // Create a plane geometry matching the canvas aspect ratio
+    // Use the actual canvas dimensions for accurate aspect ratio
+    const planeHeight = size * (canvasHeight / (size * 1.2)); // Scale height based on canvas vs font size ratio
     const planeWidth = planeHeight * (canvasWidth / canvasHeight);
     const geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
-    
-    const material = new THREE.MeshBasicMaterial({ 
-        map: texture, 
-        color: 0xffffff, 
-        transparent: true, 
-        side: THREE.DoubleSide, 
-        depthWrite: true 
+
+    const material = new THREE.MeshBasicMaterial({
+        map: texture,
+        // color: 0xffffff, // Color is now baked into texture, keep material white
+        transparent: true,
+        alphaTest: 0.1, // Helps clean up transparent edges slightly
+        side: THREE.DoubleSide,
+        depthWrite: true
     });
-    
+
     const mesh = new THREE.Mesh(geometry, material);
+
+    // Return the mesh and its calculated width for layout purposes
+    // Note: The returned 'width' should ideally represent the visual width for spacing,
+    // which is now slightly larger due to the stroke. We'll return planeWidth for geometry consistency.
     return { mesh, width: planeWidth };
 }
 
@@ -668,47 +693,52 @@ function animate() {
 
 // Add camera update function
 function updateCamera(deltaTime, audioLevel, bassLevel) {
-    // Automatic subtle movement when not interacting
+    // Automatic subtle movement when not interacting (centered around 0)
     if (!isInteracting) {
-        // Natural drift with small amplitude
-        targetMouseX = Math.sin(clock.getElapsedTime() * 0.5) * 2;
-        targetMouseY = Math.cos(clock.getElapsedTime() * 0.4) * 1.5;
+        const time = clock.getElapsedTime();
+        // Use smaller amplitudes for a gentler drift
+        targetMouseX = Math.sin(time * 0.3) * 0.5;
+        targetMouseY = Math.cos(time * 0.4) * 0.4;
     }
-    
-    // Smoothly interpolate camera position
-    mouseX = THREE.MathUtils.lerp(mouseX, targetMouseX, 0.05);
-    mouseY = THREE.MathUtils.lerp(mouseY, targetMouseY, 0.05);
-    
-    // Base camera motion on mouse/touch position and audio
-    const audioBoost = audioLevel * 15; // Audio influence (reduced from 20)
-    const bassInfluence = bassLevel * 5; // Bass-specific influence (reduced from 10)
-    
-    // Keep a more stable center point
-    const centerX = 0;
-    const centerY = 0;
-    const centerZ = 0;
-    
-    // Calculate camera orbit in a more centered way
-    const baseDistance = 250; // Base distance from center
-    
-    // Make rotations more subtle
-    const rotationFactor = 0.03; // Reduced from 0.1 for more subtle movement
-    
-    // Calculate angles 
-    const thetaX = mouseX * rotationFactor;
-    const thetaY = mouseY * rotationFactor;
-    
-    // Calculate new camera position with more stable approach
-    // Keep Z fairly stable to maintain sense of center
-    camera.position.x = baseDistance * Math.sin(thetaX);
-    camera.position.y = baseDistance * Math.sin(thetaY);
-    camera.position.z = baseDistance - audioBoost - Math.abs(Math.sin(thetaX) * 20);
-    
-    // Always look at center point 
-    camera.lookAt(centerX, centerY, centerZ);
-    
-    // Apply a small camera roll for added effect, but keep it minimal
-    camera.rotation.z = Math.sin(thetaX * 0.5) * 0.05;
+
+    // Smoothly interpolate mouse input values towards the target
+    // These values now represent angular displacement factors rather than direct position offsets
+    mouseX = THREE.MathUtils.lerp(mouseX, targetMouseX, 0.08); // Slightly faster lerp for responsiveness
+    mouseY = THREE.MathUtils.lerp(mouseY, targetMouseY, 0.08);
+
+    // --- Orbit Calculation ---
+    const baseDistance = 150;
+    const audioDistanceFactor = audioLevel * 20; // How much audio pushes/pulls the camera
+    const currentDistance = baseDistance - audioDistanceFactor;
+
+    // Define sensitivity - how much mouse movement translates to rotation angle
+    const rotationSensitivity = 0.03; // Adjust as needed
+
+    // Calculate horizontal (around Y-axis) and vertical (around X-axis) angles
+    // We add PI to horizontal angle to start looking from +Z axis if mouseX is 0
+    const horizontalAngle = mouseX * rotationSensitivity; // Azimuth
+    const verticalAngle = -mouseY * rotationSensitivity * 1.0; // Elevation (inverted Y, reduced sensitivity)
+
+    // Clamp vertical angle to prevent flipping over the poles
+    const maxVerticalAngle = Math.PI / 2 - 0.1; // Limit to slightly less than 90 degrees
+    const clampedVerticalAngle = THREE.MathUtils.clamp(verticalAngle, -maxVerticalAngle, maxVerticalAngle);
+
+    // Calculate camera position using spherical coordinates
+    // Y-up coordinate system:
+    // x = distance * cos(vertical) * sin(horizontal)
+    // y = distance * sin(vertical)
+    // z = distance * cos(vertical) * cos(horizontal)
+    camera.position.x = currentDistance * Math.cos(clampedVerticalAngle) * Math.sin(horizontalAngle);
+    camera.position.y = currentDistance * Math.sin(clampedVerticalAngle);
+    camera.position.z = currentDistance * Math.cos(clampedVerticalAngle) * Math.cos(horizontalAngle);
+
+    // Always look at the scene's origin (the central anchor point)
+    camera.lookAt(0, 0, 0);
+
+    // Optional: Add a subtle roll based on horizontal movement for dynamism
+    // camera.up.set(0, 1, 0); // Reset up vector first
+    // camera.up.applyAxisAngle(new THREE.Vector3(0, 0, 1), horizontalAngle * 0.05);
+    // This roll is subtle and might be desirable or not, uncomment to test.
 }
 
 // --- Event Handlers ---
