@@ -1,4 +1,82 @@
-import * as THREE from 'three';
+// --- Add Mouse/Touch Interaction Setup ---
+function setupInteraction() {
+    // Mouse events
+    document.addEventListener('mousemove', onDocumentMouseMove);
+    document.addEventListener('mousedown', onDocumentMouseDown);
+    document.addEventListener('mouseup', onDocumentMouseUp);
+    
+    // Touch events
+    document.addEventListener('touchstart', onDocumentTouchStart, { passive: false });
+    document.addEventListener('touchmove', onDocumentTouchMove, { passive: false });
+    document.addEventListener('touchend', onDocumentTouchEnd);
+    
+    console.log("Mouse/touch interaction setup complete");
+}
+
+function onDocumentMouseMove(event) {
+    // Calculate normalized mouse coordinates
+    mouseX = (event.clientX - windowHalfX) / 50;
+    mouseY = (event.clientY - windowHalfY) / 50;
+    
+    // If user is actively interacting (mouse pressed), update target position
+    if (isInteracting) {
+        targetMouseX = mouseX;
+        targetMouseY = mouseY;
+    }
+}
+
+function onDocumentMouseDown(event) {
+    isInteracting = true;
+    // Store initial camera position
+    cameraStartX = camera.position.x;
+    cameraStartY = camera.position.y;
+    cameraStartZ = camera.position.z;
+    // Store initial mouse position
+    touchStartX = event.clientX;
+    touchStartY = event.clientY;
+}
+
+function onDocumentMouseUp() {
+    isInteracting = false;
+}
+
+function onDocumentTouchStart(event) {
+    if (event.touches.length === 1) {
+        event.preventDefault();
+        isInteracting = true;
+        
+        // Store initial touch position
+        touchStartX = event.touches[0].pageX;
+        touchStartY = event.touches[0].pageY;
+        
+        // Store initial camera position
+        cameraStartX = camera.position.x;
+        cameraStartY = camera.position.y;
+        cameraStartZ = camera.position.z;
+    }
+}
+
+function onDocumentTouchMove(event) {
+    if (event.touches.length === 1) {
+        event.preventDefault();
+        
+        // Calculate delta from start position
+        const touchX = event.touches[0].pageX;
+        const touchY = event.touches[0].pageY;
+        
+        mouseX = (touchX - touchStartX) / 20;
+        mouseY = (touchY - touchStartY) / 20;
+        
+        if (isInteracting) {
+            targetMouseX = mouseX;
+            targetMouseY = mouseY;
+        }
+    }
+}
+
+function onDocumentTouchEnd() {
+    isInteracting = false;
+}import * as THREE from 'three';
 // Import OrbitControls for basic camera interaction during development (optional)
 // import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 // Import post-processing modules
@@ -36,6 +114,20 @@ let audioPaused = true;
 let audioOffset = 0;
 // let lastPauseTime = 0; // Not strictly needed with current manual timer
 
+// Mouse/Touch Interaction
+let mouseX = 0;
+let mouseY = 0;
+let targetMouseX = 0;
+let targetMouseY = 0;
+let windowHalfX = window.innerWidth / 2;
+let windowHalfY = window.innerHeight / 2;
+let isInteracting = false;
+let touchStartX = 0;
+let touchStartY = 0;
+let cameraStartX = 0;
+let cameraStartY = 0;
+let cameraStartZ = 0;
+
 // --- Shader Paths (ADJUST THESE TO YOUR ACTUAL FILES) ---
 const FEEDBACK_VERTEX_PATH = '/shaders/feedback.vert.glsl';
 const FEEDBACK_FRAGMENT_PATH = '/shaders/feedback.frag.glsl';
@@ -43,10 +135,49 @@ const GLITCH_VERTEX_PATH = '/shaders/glitch.vert.glsl';
 const GLITCH_FRAGMENT_PATH = '/shaders/glitch.frag.glsl';
 
 // --- Constants ---
-const FONT_SIZE = 50;
-const FONT_FACE = 'sans-serif';
+const FONT_SIZE = 70;
+// Replaced static font face with variable that will be updated after loading
+let FONT_FACE = 'sans-serif'; // Default fallback
+const FONT_FILE_PATH = 'Blackout Midnight.ttf'; // Path to your font file
+const FONT_FAMILY_NAME = 'Blackout Midnight'; // Name to reference the font with
 const LETTER_COLOR = '#FFFFFF';
 const LETTER_SPACING_FACTOR = 0.7;
+
+// Flag to track font loading status
+let customFontLoaded = false;
+
+// --- Font Loading Function ---
+async function loadCustomFont() {
+    try {
+        console.log(`Loading custom font from: ${FONT_FILE_PATH}`);
+        
+        // Encode the URL to handle spaces and special characters
+        const encodedFontPath = encodeURIComponent(FONT_FILE_PATH);
+        
+        // Create a new FontFace object with explicit format and proper URL encoding
+        const fontFace = new FontFace(
+            FONT_FAMILY_NAME, 
+            `url('${encodedFontPath}') format('truetype')`
+        );
+        
+        // Wait for the font to load
+        const loadedFont = await fontFace.load();
+        
+        // Add the loaded font to the document fonts
+        document.fonts.add(loadedFont);
+        
+        // Update the global font face variable
+        FONT_FACE = FONT_FAMILY_NAME;
+        customFontLoaded = true;
+        
+        console.log(`Custom font "${FONT_FAMILY_NAME}" loaded successfully`);
+        return true;
+    } catch (error) {
+        console.error('Error loading custom font:', error);
+        console.log('Falling back to default font');
+        return false;
+    }
+}
 
 // --- Shader Loading ---
 async function loadShader(url) {
@@ -78,6 +209,7 @@ async function loadShaders() {
     console.log("Shaders loaded.");
     return { feedbackVS, feedbackFS, glitchVS, glitchFS };
 }
+
 // --- Initialization ---
 async function init() {
     console.log("init() called");
@@ -90,6 +222,10 @@ async function init() {
     camera = new THREE.PerspectiveCamera(60, aspect, 25, 2000);
     camera.position.set(0, 0, 250);
     camera.lookAt(scene.position);
+    
+    // Update window half values for mouse interaction
+    windowHalfX = window.innerWidth / 2;
+    windowHalfY = window.innerHeight / 2;
 
     // Renderer
     renderer = new THREE.WebGLRenderer({ 
@@ -114,6 +250,16 @@ async function init() {
     const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
     directionalLight.position.set(0.5, 0.5, -1);
     scene.add(directionalLight);
+
+    // Setup mouse/touch interaction
+    setupInteraction();
+    
+    // Load custom font first
+    try {
+        await loadCustomFont();
+    } catch (error) {
+        console.error("Custom font loading failed, using fallback:", error);
+    }
 
     // --- Load Assets Concurrently (Audio, SRT, Shaders) ---
     console.log("Starting asset loading...");
@@ -260,9 +406,10 @@ function getBrightColor() { /* ... your logic ... */
 }
 
 
-// --- Lyric Object Creation (Your functions: createLyricObjects, createLetterMesh) ---
-// (Keep these functions as they were)
+// --- Lyric Object Creation (Updated with font loading checks) ---
 function createLyricObjects() {
+    console.log(`Creating lyric objects with font: ${FONT_FACE}`);
+    
     lyrics.forEach(lyric => { /* ... your object creation logic ... */
         const lineGroup = new THREE.Group(); lineGroup.position.set(lyric.currentX, lyric.currentY, lyric.currentZ);
         const charArray = lyric.text.split(''); let currentXOffset = 0; const meshes = [];
@@ -277,16 +424,64 @@ function createLyricObjects() {
             lineGroup.add(mesh); meshes.push(mesh); currentXOffset += charWidth;
         });
         lyric.threeGroup = lineGroup; lyric.letterMeshes = meshes; lineGroup.visible = false; scene.add(lineGroup);
-    }); console.log("Created Three.js objects for lyrics.");
+    }); 
+    console.log("Created Three.js objects for lyrics.");
 }
-function createLetterMesh(char, size, color = LETTER_COLOR) { /* ... your canvas texture logic ... */
-    const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d'); const font = `${size}px ${FONT_FACE}`; ctx.font = font;
-    const metrics = ctx.measureText(char); let textWidth = metrics.width; const canvasWidth = THREE.MathUtils.ceilPowerOfTwo(textWidth + size * 0.2); const canvasHeight = THREE.MathUtils.ceilPowerOfTwo(size * 1.2); canvas.width = canvasWidth; canvas.height = canvasHeight;
-    ctx.font = font; ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(char, canvasWidth / 2, canvasHeight / 2);
-    const texture = new THREE.CanvasTexture(canvas); texture.needsUpdate = true;
-    const planeHeight = size * 1.0; const planeWidth = planeHeight * (canvasWidth / canvasHeight); const geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
-    const material = new THREE.MeshBasicMaterial({ map: texture, color: 0xffffff, transparent: true, side: THREE.DoubleSide, depthWrite: true });
-    const mesh = new THREE.Mesh(geometry, material); return { mesh, width: planeWidth };
+
+// Updated createLetterMesh function to use the loaded font
+function createLetterMesh(char, size, color = LETTER_COLOR) {
+    // Create a canvas element to draw the text
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Set font size and font family (now using the loaded custom font)
+    const font = `${size}px ${FONT_FACE}`;
+    ctx.font = font;
+    
+    // Measure the text to determine canvas size
+    const metrics = ctx.measureText(char);
+    let textWidth = metrics.width;
+    
+    // Create a canvas with power-of-two dimensions for better texture performance
+    const canvasWidth = THREE.MathUtils.ceilPowerOfTwo(textWidth + size * 0.2);
+    const canvasHeight = THREE.MathUtils.ceilPowerOfTwo(size * 1.2);
+    
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+    
+    // Redraw with the properly sized canvas
+    ctx.font = font;
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    
+    // Log font being used (helpful for debugging)
+    if (char === 'A' || char === 'a') {
+        console.log(`Drawing character '${char}' with font: ${font}`);
+    }
+    
+    // Draw the text in the center of the canvas
+    ctx.fillText(char, canvasWidth / 2, canvasHeight / 2);
+    
+    // Create a texture from the canvas
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    
+    // Create a plane with the texture
+    const planeHeight = size * 1.0;
+    const planeWidth = planeHeight * (canvasWidth / canvasHeight);
+    const geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
+    
+    const material = new THREE.MeshBasicMaterial({ 
+        map: texture, 
+        color: 0xffffff, 
+        transparent: true, 
+        side: THREE.DoubleSide, 
+        depthWrite: true 
+    });
+    
+    const mesh = new THREE.Mesh(geometry, material);
+    return { mesh, width: planeWidth };
 }
 
 
@@ -354,6 +549,9 @@ function animate() {
             if(lyrics[0].threeGroup) lyrics[0].threeGroup.visible = true;
         }
     }
+    
+    // Update camera based on mouse/touch interaction
+    updateCamera(deltaTime, audioLevel, bass);
 
     // Update lyric objects (keep your existing lyrics update code here)
     lyrics.forEach(lyric => {
@@ -402,7 +600,7 @@ function animate() {
     feedbackShader.uniforms.prevFrame.value = renderTargetB.texture;
     feedbackShader.uniforms.time.value = elapsedTime;
     feedbackShader.uniforms.audioLevel.value = audioLevel;
-    feedbackShader.uniforms.feedbackAmount.value = 0.97 + audioLevel * 0.05;
+    feedbackShader.uniforms.feedbackAmount.value = 0.90 + audioLevel * 0.05;
     
     // STEP 3: Render the feedback effect to a temporary target
     // Create a temporary target instead of reusing B (to avoid feedback loop)
@@ -427,7 +625,7 @@ function animate() {
     glitchShader.uniforms.tDiffuse.value = tempTarget.texture;
     glitchShader.uniforms.time.value = elapsedTime;
     glitchShader.uniforms.audioLevel.value = audioLevel;
-    glitchShader.uniforms.intensity.value = 0.2 + audioLevel * 0.6;
+    glitchShader.uniforms.intensity.value = 0.1 + audioLevel * 0.3;
     
     // Replace the quad in the scene
     quadScene.clear();
@@ -468,10 +666,59 @@ function animate() {
     // The next frame will now use renderTargetB as the previous frame
 }
 
+// Add camera update function
+function updateCamera(deltaTime, audioLevel, bassLevel) {
+    // Automatic subtle movement when not interacting
+    if (!isInteracting) {
+        // Natural drift with small amplitude
+        targetMouseX = Math.sin(clock.getElapsedTime() * 0.5) * 2;
+        targetMouseY = Math.cos(clock.getElapsedTime() * 0.4) * 1.5;
+    }
+    
+    // Smoothly interpolate camera position
+    mouseX = THREE.MathUtils.lerp(mouseX, targetMouseX, 0.05);
+    mouseY = THREE.MathUtils.lerp(mouseY, targetMouseY, 0.05);
+    
+    // Base camera motion on mouse/touch position and audio
+    const audioBoost = audioLevel * 15; // Audio influence (reduced from 20)
+    const bassInfluence = bassLevel * 5; // Bass-specific influence (reduced from 10)
+    
+    // Keep a more stable center point
+    const centerX = 0;
+    const centerY = 0;
+    const centerZ = 0;
+    
+    // Calculate camera orbit in a more centered way
+    const baseDistance = 250; // Base distance from center
+    
+    // Make rotations more subtle
+    const rotationFactor = 0.03; // Reduced from 0.1 for more subtle movement
+    
+    // Calculate angles 
+    const thetaX = mouseX * rotationFactor;
+    const thetaY = mouseY * rotationFactor;
+    
+    // Calculate new camera position with more stable approach
+    // Keep Z fairly stable to maintain sense of center
+    camera.position.x = baseDistance * Math.sin(thetaX);
+    camera.position.y = baseDistance * Math.sin(thetaY);
+    camera.position.z = baseDistance - audioBoost - Math.abs(Math.sin(thetaX) * 20);
+    
+    // Always look at center point 
+    camera.lookAt(centerX, centerY, centerZ);
+    
+    // Apply a small camera roll for added effect, but keep it minimal
+    camera.rotation.z = Math.sin(thetaX * 0.5) * 0.05;
+}
+
 // --- Event Handlers ---
 function onWindowResize() {
     const width = window.innerWidth;
     const height = window.innerHeight;
+
+    // Update mouse interaction variables
+    windowHalfX = width / 2;
+    windowHalfY = height / 2;
 
     camera.aspect = width / height;
     camera.updateProjectionMatrix();

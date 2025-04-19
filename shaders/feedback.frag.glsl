@@ -31,9 +31,10 @@ void main() {
     // 1. Scale - Most important for tunnel effect
     // Use a value > 1.0 for zoom-in tunnel effect
     // Making the scaling stronger for more pronounced tunneling
-    float zoomBase = 1.04;  // Base zoom factor (increased)
-    float zoomAudio = audioLevel * 0.02; // Audio-reactive component
-    float zoomPulse = sin(time * 0.2) * 0.003; // Subtle pulsing
+    float zoomBase = 1.00;  // Base zoom factor (increased)
+    float zoomAudio = audioLevel * 0.01; // Audio-reactive component
+    //float zoomPulse = sin(time * 0.2) * 0.003; // Subtle pulsing
+    float zoomPulse = 0.0;
     float zoom = zoomBase + zoomPulse + zoomAudio;
     
     // Apply zoom - this is the key to the tunnel effect
@@ -47,7 +48,7 @@ void main() {
     transformedUv = center + rotate2d(rotationAngle) * (transformedUv - center);
     
     // 3. Translation - Subtle drift
-    float driftAmount = 0.0015; // Small drift amount
+    float driftAmount = 0.0005; // Small drift amount
     transformedUv += vec2(
         sin(time * 0.1) * driftAmount,
         cos(time * 0.13) * driftAmount
