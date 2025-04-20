@@ -10,14 +10,13 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 
 // Core Three.js
 let scene, camera, renderer;
-// let controls; // For OrbitControls (optional)
 
 // Post-Processing
-let composer; // Note: We aren't using the EffectComposer from 'three/addons' in the final ping-pong logic, but keep imports if needed elsewhere.
 let renderTargetA, renderTargetB; // For ping-pong feedback
 let feedbackShader, glitchShader; // Shader materials
 let quadScene, quadCamera; // For rendering full-screen quads
 let feedbackQuad, outputQuad; // Full-screen quads for effects
+const resolutionScale = 0.75; // OPTIMIZATION: Lower value (e.g., 0.5) = more performance, less quality
 
 // Audio
 let listener, sound, audioLoader, analyser;
@@ -29,7 +28,6 @@ let srtLoaded = false;
 
 // Animation / Timing
 const clock = new THREE.Clock();
-// Custom audio playback tracking
 let audioStartTimestamp = 0;
 let audioPaused = true;
 let audioOffset = 0;
@@ -44,14 +42,12 @@ let windowHalfY = window.innerHeight / 2;
 let isInteracting = false;
 let touchStartX = 0;
 let touchStartY = 0;
-let cameraStartX = 0; // Not used in current orbit logic, but keep if needed
-let cameraStartY = 0;
-let cameraStartZ = 0;
 
+let averageActiveLyricZ = -150; // Default Z, will be updated each frame
 const raycaster = new THREE.Raycaster();
-const mouse3D = new THREE.Vector2(); // Normalized mouse position (-1 to 1)
-const mousePlaneZ = -150; // Z-plane where mouse interaction occurs (can be adjusted)
-const mouseWorldPosition = new THREE.Vector3(); // 3D position in world space for scaling
+const mouse3D = new THREE.Vector2(); 
+const mousePlaneZ = -100; 
+const mouseWorldPosition = new THREE.Vector3(); 
 
 let viewportWorldWidth = 0;
 let viewportWorldHeight = 0;
@@ -62,46 +58,67 @@ const FEEDBACK_VERTEX_PATH = '/shaders/feedback.vert.glsl';
 const FEEDBACK_FRAGMENT_PATH = '/shaders/feedback.frag.glsl';
 const GLITCH_VERTEX_PATH = '/shaders/glitch.vert.glsl';
 const GLITCH_FRAGMENT_PATH = '/shaders/glitch.frag.glsl';
+/* * OPTIMIZATION NOTE: Consider adding `precision mediump float;` 
+* at the top of feedback.frag.glsl and glitch.frag.glsl 
+* if high precision isn't strictly required. 
+*/
 
 // --- Constants ---
-const FONT_SIZE = 50; // Base font size
-let FONT_FACE = 'sans-serif'; // Default fallback
-const FONT_FILE_PATH = 'Blackout Midnight.ttf'; // Path to your font file
-const FONT_FAMILY_NAME = 'Blackout Midnight'; // Name to reference the font with
-const LETTER_COLOR = '#FFFFFF'; // Default letter color (overridden by random color)
-const LETTER_SPACING_FACTOR = 0.1; // Adjusts space between letters
-const STROKE_WIDTH = 8; // Thickness of the letter outline
-const STROKE_COLOR = 'red'; // Color of the letter outline
-
-// Flag to track font loading status
+const FONT_SIZE = 50; 
+let FONT_FACE = 'sans-serif'; 
+const FONT_FILE_PATH = 'Blackout Midnight.ttf'; 
+const FONT_FAMILY_NAME = 'Blackout Midnight'; 
+const LETTER_COLOR = '#FFFFFF'; 
+const LETTER_SPACING_FACTOR = 0.1; 
+const STROKE_WIDTH = 8; 
+const STROKE_COLOR = 'red'; 
 let customFontLoaded = false;
+
+// --- OPTIMIZATION: Reusable temporary objects for loops ---
+const _tempVec3 = new THREE.Vector3();
+const _tempVec3_b = new THREE.Vector3();
+const _tempQuat = new THREE.Quaternion();
+const _tempEuler = new THREE.Euler();
+
 
 // --- Utility Functions ---
 
-function updateMouse3DPosition(event) {
+function updateMouse3DPosition(event) { // Takes the event, uses global averageActiveLyricZ
+    if (!camera) return; // Need camera
+
     mouse3D.x = (event.clientX / window.innerWidth) * 2 - 1;
     mouse3D.y = -(event.clientY / window.innerHeight) * 2 + 1;
     raycaster.setFromCamera(mouse3D, camera);
-    const planeNormal = new THREE.Vector3(0, 0, 1);
-    // Adjust plane constant based on camera Z, keep interaction plane relative
-    const planeConstant = -(camera.position.z + mousePlaneZ); 
+
+    // *** FIX: Use averageActiveLyricZ for the interaction plane ***
+    const planeZ = averageActiveLyricZ; // Target the average depth of active lyrics
+    const planeNormal = _tempVec3.set(0, 0, 1); // Reuse temp vector
+    const planeConstant = -planeZ; // Plane equation constant d = -Z when normal is (0,0,1)
     const plane = new THREE.Plane(planeNormal, planeConstant);
+
+    // Optional Debug Log: Check the plane's depth
+    // if (clock.elapsedTime % 1.0 < 0.017) { // Log roughly once per second
+    //      console.log(`Mouse Interaction Plane Z: ${planeZ.toFixed(1)}, Camera Z: ${camera.position.z.toFixed(1)}`);
+    // }
+
+    // Find intersection with this new plane
     raycaster.ray.intersectPlane(plane, mouseWorldPosition);
-    // Fallback if intersectPlane fails (e.g., ray parallel to plane)
+
+    // Fallback if intersection fails (e.g., ray parallel to plane)
     if (!mouseWorldPosition || isNaN(mouseWorldPosition.x)) {
-       mouseWorldPosition.set(0,0, camera.position.z + mousePlaneZ); // Place it on the plane directly in front
+       // Simple fallback: Place point on the plane near origin
+       mouseWorldPosition.set(0, 0, planeZ); 
     }
 }
 
 function updateViewportDimensions() {
     if (!camera) return;
     const fov = camera.fov * (Math.PI / 180);
-    const zDepth = -150; // Reference Z-depth for positioning calculations
+    const zDepth = -150; 
     const distance = Math.abs(zDepth - camera.position.z);
     viewportWorldHeight = 2 * Math.tan(fov / 2) * distance;
     aspectRatio = window.innerWidth / window.innerHeight;
     viewportWorldWidth = viewportWorldHeight * aspectRatio;
-    // console.log(`Viewport at Z=${zDepth}: ${viewportWorldWidth.toFixed(2)} x ${viewportWorldHeight.toFixed(2)}`);
 }
 
 function getWorldPositionFromPercent(xPercent, yPercent, zDepth) {
@@ -139,7 +156,6 @@ function getCurrentPlaybackTime() {
         return audioOffset;
     } else {
         const elapsedSinceStart = (performance.now() / 1000) - audioStartTimestamp;
-        // Ensure playback time doesn't go below offset (can happen with tiny timing variations)
         return Math.max(audioOffset, audioOffset + elapsedSinceStart);
     }
 }
@@ -156,41 +172,35 @@ function setupInteraction() {
 }
 
 function onDocumentMouseMove(event) {
-    targetMouseX = (event.clientX - windowHalfX); // Store raw pixel offset
+    targetMouseX = (event.clientX - windowHalfX); 
     targetMouseY = (event.clientY - windowHalfY);
     updateMouse3DPosition(event);
 }
 
 function onDocumentMouseDown(event) {
     isInteracting = true;
-    // Store initial mouse/touch position relative to center for delta calculation
     touchStartX = event.clientX - windowHalfX;
     touchStartY = event.clientY - windowHalfY;
-    // Raw mouseX/Y are now based on delta, so reset target to current
     targetMouseX = touchStartX;
     targetMouseY = touchStartY;
-    mouseX = targetMouseX; // Snap immediately
+    mouseX = targetMouseX; 
     mouseY = targetMouseY;
 }
 
 function onDocumentMouseUp() {
     isInteracting = false;
-    // Keep targetMouseX/Y where they are for smooth transition to idle animation
 }
 
 function onDocumentTouchStart(event) {
     if (event.touches.length === 1) {
         event.preventDefault();
         isInteracting = true;
-        // Store initial touch position relative to center
         touchStartX = event.touches[0].pageX - windowHalfX;
         touchStartY = event.touches[0].pageY - windowHalfY;
         targetMouseX = touchStartX;
         targetMouseY = touchStartY;
-        mouseX = targetMouseX; // Snap immediately
+        mouseX = targetMouseX; 
         mouseY = targetMouseY;
-
-        // Update 3D position for initial touch
         updateMouse3DPosition({ clientX: event.touches[0].pageX, clientY: event.touches[0].pageY });
     }
 }
@@ -200,33 +210,28 @@ function onDocumentTouchMove(event) {
         event.preventDefault();
         const touchX = event.touches[0].pageX - windowHalfX;
         const touchY = event.touches[0].pageY - windowHalfY;
-
-        // Update target based on current touch position
         targetMouseX = touchX;
         targetMouseY = touchY;
-
-        // Update 3D position
         updateMouse3DPosition({ clientX: event.touches[0].pageX, clientY: event.touches[0].pageY });
     }
 }
 
 function onDocumentTouchEnd() {
     isInteracting = false;
-    // Keep targetMouseX/Y where they are
 }
 
 // --- Font Loading ---
 async function loadCustomFont() {
     try {
         console.log(`Loading custom font from: ${FONT_FILE_PATH}`);
-        const encodedFontFileName = encodeURIComponent(FONT_FILE_PATH); // Encode only the filename part
+        const encodedFontFileName = encodeURIComponent(FONT_FILE_PATH); 
         const fontFace = new FontFace(
             FONT_FAMILY_NAME,
-            `url('${encodedFontFileName}') format('truetype')` // Use encoded filename in URL
+            `url('${encodedFontFileName}') format('truetype')` 
         );
         const loadedFont = await fontFace.load();
         document.fonts.add(loadedFont);
-        FONT_FACE = FONT_FAMILY_NAME; // Use the loaded font family name
+        FONT_FACE = FONT_FAMILY_NAME; 
         customFontLoaded = true;
         console.log(`Custom font "${FONT_FAMILY_NAME}" loaded successfully`);
         return true;
@@ -269,31 +274,22 @@ async function loadShaders() {
 
 // --- Audio Setup & Controls ---
 function setupAudio() {
-    return new Promise((resolve, reject) => { // Wrap in promise for async init
+    return new Promise((resolve, reject) => { 
         listener = new THREE.AudioListener();
-        camera.add(listener); // Add listener to camera
+        camera.add(listener); 
         sound = new THREE.Audio(listener);
         audioLoader = new THREE.AudioLoader();
 
         audioLoader.load('Vessels_Masterv3_4824.mp3',
-            // Success
             buffer => {
                 sound.setBuffer(buffer);
                 sound.setVolume(0.5);
-                // sound.setLoop(true); // Optional: Loop audio
                 analyser = new THREE.AudioAnalyser(sound, FFT_SIZE);
                 console.log("Audio loaded and analyzer created");
-                resolve(buffer); // Resolve the promise
+                resolve(buffer); 
             },
-            // Progress
-            progress => {
-                console.log(`Audio loading: ${Math.round(progress.loaded / progress.total * 100)}%`);
-            },
-            // Error
-            error => {
-                console.error('Error loading audio:', error);
-                reject(error); // Reject the promise
-            }
+            progress => { console.log(`Audio loading: ${Math.round(progress.loaded / progress.total * 100)}%`); },
+            error => { console.error('Error loading audio:', error); reject(error); }
         );
     });
 }
@@ -304,49 +300,32 @@ function setupControls() {
 
     async function handlePlayAudio() {
         try {
-            console.log("Play button pressed, context state:", listener.context.state);
+            // console.log("Play button pressed, context state:", listener.context.state);
             if (listener.context.state === 'suspended') {
                 await listener.context.resume();
-                console.log("AudioContext resumed.");
+                // console.log("AudioContext resumed.");
             }
-
             if (sound && sound.buffer && listener.context.state === 'running') {
-                 // Use setTimeout only if strictly needed, often direct play works after resume
-                // setTimeout(() => { 
-                    if (!sound.isPlaying) {
-                        // Calculate offset - start from beginning or resume from pause point
-                        sound.offset = audioOffset; 
-                        sound.play();
-                        // Recalculate start timestamp based on current time and offset
-                        audioStartTimestamp = performance.now() / 1000 - audioOffset; 
-                        audioPaused = false;
-                        console.log(`Playing audio: offset=${audioOffset.toFixed(3)}s, timestamp=${audioStartTimestamp.toFixed(3)}s`);
-                    } else {
-                        console.log("Audio already playing.");
-                    }
-                // }, 50); // Reduced or removed delay
-            } else {
-                 console.warn("Cannot play audio - check sound buffer and context state:", { buffer: !!sound?.buffer, state: listener.context.state });
-            }
-        } catch (err) {
-            console.error("Error in handlePlayAudio:", err);
-        }
+                if (!sound.isPlaying) {
+                    sound.offset = audioOffset; 
+                    sound.play();
+                    audioStartTimestamp = performance.now() / 1000 - audioOffset; 
+                    audioPaused = false;
+                    // console.log(`Playing audio: offset=${audioOffset.toFixed(3)}s, timestamp=${audioStartTimestamp.toFixed(3)}s`);
+                }
+            } else { console.warn("Cannot play audio - check sound buffer and context state"); }
+        } catch (err) { console.error("Error in handlePlayAudio:", err); }
     }
 
     function handlePauseAudio() {
         try {
             if (sound && sound.isPlaying) {
-                // Calculate current playback time *before* pausing
                 audioOffset = getCurrentPlaybackTime(); 
-                sound.pause(); // Pause stops internal clock
+                sound.pause(); 
                 audioPaused = true;
-                console.log("Paused at offset:", audioOffset.toFixed(3));
-            } else {
-                 console.warn("Cannot pause: sound is not playing.");
-            }
-        } catch (err) {
-            console.error("Error during pause:", err);
-        }
+                // console.log("Paused at offset:", audioOffset.toFixed(3));
+            } else { console.warn("Cannot pause: sound is not playing."); }
+        } catch (err) { console.error("Error during pause:", err); }
     }
 
     playButton.addEventListener('click', handlePlayAudio);
@@ -358,110 +337,70 @@ function setupControls() {
 }
 
 function setupiOSAudioUnlock() {
-    console.log("Setting up iOS audio unlock handlers");
+    // console.log("Setting up iOS audio unlock handlers");
     const unlockAudio = async () => {
-        if (!listener || !listener.context || listener.context.state !== 'suspended') {
-            return; // Only proceed if suspended
-        }
+        if (!listener || !listener.context || listener.context.state !== 'suspended') return; 
         try {
             await listener.context.resume();
-            console.log("Audio context unlocked via user gesture.");
-            // Play silent buffer to ensure unlock persists
+            // console.log("Audio context unlocked via user gesture.");
             const buffer = listener.context.createBuffer(1, 1, 22050);
             const source = listener.context.createBufferSource();
             source.buffer = buffer;
             source.connect(listener.context.destination);
             source.start(0);
             source.stop(listener.context.currentTime + 0.001);
-             console.log("Silent buffer played.");
-        } catch (error) {
-            console.error("Failed to unlock audio context:", error);
-        }
+        } catch (error) { console.error("Failed to unlock audio context:", error); }
     };
-    // Use 'pointerdown' for broader compatibility (touch/mouse)
     document.addEventListener('pointerdown', unlockAudio, { once: true }); 
 }
 
 // --- Initialization ---
 async function init() {
     console.log("init() called");
-    
     scene = new THREE.Scene();
-
     aspectRatio = window.innerWidth / window.innerHeight;
-    camera = new THREE.PerspectiveCamera(60, aspectRatio, 1, 2000); // Adjusted near plane
-    camera.position.set(0, 0, 300); // Start distance
+    camera = new THREE.PerspectiveCamera(60, aspectRatio, 1, 2000); 
+    camera.position.set(0, 0, 250); 
     camera.lookAt(scene.position);
-    
-    updateViewportDimensions(); // Initial calculation
+    updateViewportDimensions(); 
     windowHalfX = window.innerWidth / 2;
     windowHalfY = window.innerHeight / 2;
 
-    // Load font first
     await loadCustomFont(); 
 
-    renderer = new THREE.WebGLRenderer({ 
-        antialias: true,
-        preserveDrawingBuffer: true // Needed for feedback source
-    });
+    renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.autoClear = false; // Crucial for manual render passes
+    renderer.autoClear = false; 
     document.getElementById('visualizer-container').appendChild(renderer.domElement);
 
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-    scene.add(ambientLight);
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.9);
-    directionalLight.position.set(0.5, 1, -0.5); // Adjust light direction
-    scene.add(directionalLight);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6); scene.add(ambientLight);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.9); directionalLight.position.set(0.5, 1, -0.5); scene.add(directionalLight);
 
-    setupInteraction(); // Setup mouse/touch listeners
+    setupInteraction(); 
 
     console.log("Starting asset loading...");
-    // Use Promise.allSettled for robust loading
     const [shadersResult, audioResult, srtResult] = await Promise.allSettled([
-        loadShaders(),
-        setupAudio(), // setupAudio now returns a promise
-        fetch('lyrics.srt').then(res => {
-            if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-            return res.text();
-        })
+        loadShaders(), setupAudio(), 
+        fetch('lyrics.srt').then(res => { if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`); return res.text(); })
     ]);
 
     let shaderCode;
-    if (shadersResult.status === 'fulfilled') {
-        shaderCode = shadersResult.value;
-    } else {
-        console.error("FATAL: Failed to load shaders!", shadersResult.reason);
-        // Optionally display an error message to the user here
-        return; // Stop initialization if shaders fail
-    }
+    if (shadersResult.status === 'fulfilled') { shaderCode = shadersResult.value; } 
+    else { console.error("FATAL: Failed to load shaders!", shadersResult.reason); return; }
 
-    if (audioResult.status === 'fulfilled') {
-        console.log("Audio setup completed successfully.");
-    } else {
-        console.error('Audio setup failed:', audioResult.reason);
-        // Audio failure might be acceptable, continue but analyser won't work
-    }
+    if (audioResult.status === 'fulfilled') { console.log("Audio setup completed successfully."); } 
+    else { console.error('Audio setup failed:', audioResult.reason); }
 
     if (srtResult.status === 'fulfilled') {
-        lyrics = parseSRT(srtResult.value);
-        srtLoaded = true;
-        console.log("SRT parsed, found " + lyrics.length + " entries");
-        createLyricObjects(); // Create objects only after SRT is loaded
-    } else {
-        console.error("Error loading or parsing SRT:", srtResult.reason);
-        // Allow proceeding without lyrics, or display an error
-    }
+        lyrics = parseSRT(srtResult.value); srtLoaded = true;
+        createLyricObjects(); 
+    } else { console.error("Error loading or parsing SRT:", srtResult.reason); }
     console.log("Asset loading finished.");
 
-    // Setup post-processing using loaded shaders
     setupPostProcessing(shaderCode); 
-
-    setupControls(); // Setup play/pause buttons
-
+    setupControls(); 
     window.addEventListener('resize', onWindowResize);
-
     console.log("Starting animation loop...");
     animate();
 }
@@ -469,19 +408,18 @@ async function init() {
 // --- Post-Processing Setup ---
 function setupPostProcessing(shaderCode) {
     console.log("Setting up ping-pong feedback post-processing...");
-    
     const targetOptions = { 
-        minFilter: THREE.LinearFilter, 
-        magFilter: THREE.LinearFilter, 
-        format: THREE.RGBAFormat,
-        type: THREE.UnsignedByteType, // Standard type
-        stencilBuffer: false // Usually not needed for post-processing
+        minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, 
+        format: THREE.RGBAFormat, type: THREE.UnsignedByteType, stencilBuffer: false
     };
     
     const pixelRatio = renderer.getPixelRatio();
-    const width = Math.floor(window.innerWidth * pixelRatio);
-    const height = Math.floor(window.innerHeight * pixelRatio);
+    // *** OPTIMIZATION: Apply resolution scale factor ***
+    const width = Math.floor(window.innerWidth * pixelRatio * resolutionScale);
+    const height = Math.floor(window.innerHeight * pixelRatio * resolutionScale);
     
+    console.log(`Setting post-processing resolution to: ${width}x${height} (Scale: ${resolutionScale})`);
+
     renderTargetA = new THREE.WebGLRenderTarget(width, height, targetOptions);
     renderTargetB = new THREE.WebGLRenderTarget(width, height, targetOptions);
     
@@ -489,30 +427,12 @@ function setupPostProcessing(shaderCode) {
     quadScene = new THREE.Scene();
     
     feedbackShader = new THREE.ShaderMaterial({
-        uniforms: {
-            tDiffuse: { value: null },    // Current frame (scene rendered to A)
-            prevFrame: { value: null },   // Previous feedback result (from B)
-            feedbackAmount: { value: 0.8 },
-            time: { value: 0.0 },
-            audioLevel: { value: 0.0 }
-        },
-        vertexShader: shaderCode.feedbackVS,
-        fragmentShader: shaderCode.feedbackFS,
-        depthTest: false,
-        depthWrite: false
+        uniforms: { tDiffuse: { value: null }, prevFrame: { value: null }, feedbackAmount: { value: 0.95 }, time: { value: 0.0 }, audioLevel: { value: 0.0 } },
+        vertexShader: shaderCode.feedbackVS, fragmentShader: shaderCode.feedbackFS, depthTest: false, depthWrite: false
     });
-    
     glitchShader = new THREE.ShaderMaterial({
-        uniforms: {
-            tDiffuse: { value: null },    // Input from feedback pass
-            intensity: { value: 0.1 }, // Base intensity
-            time: { value: 0.0 },
-            audioLevel: { value: 0.0 }
-        },
-        vertexShader: shaderCode.glitchVS,
-        fragmentShader: shaderCode.glitchFS,
-        depthTest: false,
-        depthWrite: false
+        uniforms: { tDiffuse: { value: null }, intensity: { value: 0.1 }, time: { value: 0.0 }, audioLevel: { value: 0.0 } },
+        vertexShader: shaderCode.glitchVS, fragmentShader: shaderCode.glitchFS, depthTest: false, depthWrite: false
     });
     
     feedbackQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), feedbackShader);
@@ -521,427 +441,250 @@ function setupPostProcessing(shaderCode) {
     console.log("Post-processing setup complete.");
 }
 
-// --- SRT Parsing ---
 // --- SRT Parsing (with Line Splitting, Corrected Stacking, and Split Flag) ---
 function parseSRT(srtContent) {
-    const parsedLyrics = []; // Array to hold the final lyric objects
-    const blocks = srtContent.trim().split('\n\n'); // Split SRT into time blocks
+    const parsedLyrics = []; 
+    const blocks = srtContent.trim().split('\n\n'); 
 
-    // --- Configuration ---
-    // Maximum characters before attempting to split a line.
-    // ** Tune this value based on testing on target mobile devices! **
     const MAX_LINE_LENGTH = 10; 
-    // Vertical distance between stacked lines (adjust multiplier if needed)
-    const LINE_STACKING_OFFSET = FONT_SIZE * 1.1; // Using 1.1 based on previous adjustment
+    const LINE_STACKING_OFFSET = FONT_SIZE * 1.1; // Increased offset
 
-    // --- Process each SRT block ---
     for (const block of blocks) {
-        const lines = block.split('\n'); // Split block into lines (index, time, text...)
-        // Basic validation: Need at least index, time, and one line of text
+        const lines = block.split('\n'); 
         if (lines.length < 3) continue; 
-
-        const timeCode = lines[1]; // Get the timecode line
-
-        // --- Timing Extraction ---
-        const times = timeCode.split(' --> '); // Define 'times' array
-        if (times.length !== 2) continue; // Validate format
+        const timeCode = lines[1]; 
+        const times = timeCode.split(' --> '); 
+        if (times.length !== 2) continue; 
         const startTime = timeToMilliseconds(times[0]); 
         const endTime = timeToMilliseconds(times[1]);   
-        // --- End Timing Extraction ---
-
         const originalText = lines.slice(2).join(' '); 
         const randomColor = getBrightColor(); 
 
-        let textParts = [originalText]; // Start with the original text
-        let wasSplit = false; // *** ADD FLAG to track if splitting occurred ***
+        let textParts = [originalText]; 
+        let wasSplit = false; // Flag for split lines
 
-        // --- Automatic Line Splitting Logic ---
+        // Line Splitting Logic
         if (originalText.length > MAX_LINE_LENGTH) {
-            let remainingText = originalText;
-            let potentialParts = []; 
-            let safetyBreak = 0; 
-
+            let remainingText = originalText; let potentialParts = []; let safetyBreak = 0; 
             while (remainingText.length > MAX_LINE_LENGTH && safetyBreak < 5) { 
-                 safetyBreak++;
-                 let splitIndex = -1; 
-                 const idealSplitPoint = MAX_LINE_LENGTH; 
-                 const searchRadius = 10; 
-
-                 // Search backwards for a space
-                 for (let i = idealSplitPoint; i >= idealSplitPoint - searchRadius && i > 0; i--) {
-                     if (remainingText[i] === ' ') { splitIndex = i; break; }
-                 }
-                 // If not found, search forwards
-                 if (splitIndex === -1) {
-                      for (let i = idealSplitPoint + 1; i < idealSplitPoint + searchRadius && i < remainingText.length; i++) {
-                         if (remainingText[i] === ' ') { splitIndex = i; break; }
-                     }
-                 }
-                 // If still no space, force break
+                 safetyBreak++; let splitIndex = -1; const idealSplitPoint = MAX_LINE_LENGTH; const searchRadius = 10; 
+                 for (let i = idealSplitPoint; i >= idealSplitPoint - searchRadius && i > 0; i--) { if (remainingText[i] === ' ') { splitIndex = i; break; } }
+                 if (splitIndex === -1) { for (let i = idealSplitPoint + 1; i < idealSplitPoint + searchRadius && i < remainingText.length; i++) { if (remainingText[i] === ' ') { splitIndex = i; break; } } }
                  if (splitIndex === -1) { splitIndex = MAX_LINE_LENGTH; }
-
-                 potentialParts.push(remainingText.substring(0, splitIndex).trim());
-                 remainingText = remainingText.substring(splitIndex).trim();
-
-                 if (remainingText.length <= MAX_LINE_LENGTH) {
-                     potentialParts.push(remainingText);
-                     remainingText = ""; 
-                     break; 
-                 }
+                 potentialParts.push(remainingText.substring(0, splitIndex).trim()); remainingText = remainingText.substring(splitIndex).trim();
+                 if (remainingText.length <= MAX_LINE_LENGTH) { potentialParts.push(remainingText); remainingText = ""; break; }
             } 
             if(remainingText.length > 0) { potentialParts.push(remainingText); }
+            if (potentialParts.length > 1) { textParts = potentialParts; wasSplit = true; }
+        } // End Splitting Logic
 
-            // If splitting happened, update textParts and set the flag
-            if (potentialParts.length > 1) {
-                textParts = potentialParts; 
-                wasSplit = true; // *** SET FLAG ***
-                // console.log(`Split line at ${startTime}ms into ${textParts.length} parts:`, textParts);
-            }
-        } // --- End Line Splitting Logic ---
-
-        // --- Create Lyric Objects for each Text Part ---
         const partCount = textParts.length; 
-        const baseInitialPos = randomPositionInViewport(
-            -0.2, 0.2,  // Tighter X range
-            -0.15, 0.15, // Tighter Y range 
-            -180, -90   // Tighter Z range
-        );
+        const baseInitialPos = randomPositionInViewport(-0.2, 0.2, -0.15, 0.15, -180, -90);
         const totalHeight = (partCount - 1) * LINE_STACKING_OFFSET;
         const topTargetY = baseInitialPos.y + totalHeight / 2; 
 
-        // Loop through each text part (could be 1 or more) and create a lyric object
         textParts.forEach((textPart, index) => {
-            // Calculate the target Y for this specific line
             const lineTargetY = topTargetY - (index * LINE_STACKING_OFFSET);
-
+            // console.log(`Creating lyric part ${index}: Text="${textPart.substring(0,10)}...", TargetY=${lineTargetY.toFixed(2)}`); // Keep for debug if needed
             parsedLyrics.push({
-                id: `${startTime}_${index}`, 
-                text: textPart, 
-                startTime: startTime, 
-                endTime: endTime,     
-                active: false,        
-                color: randomColor,   
-                size: FONT_SIZE,      
-                threeGroup: null,     
-                letterMeshes: [],     
-                targetX: baseInitialPos.x,  
-                targetY: lineTargetY,       // Calculated stacked Y
-                targetZ: baseInitialPos.z,
-                currentX: baseInitialPos.x, 
-                currentY: lineTargetY,      // Calculated stacked Y
-                currentZ: baseInitialPos.z - 50, // Start further back
-                baseScale: 1.0,         
-                wasSplit: wasSplit, // *** STORE THE FLAG ***
-                disposed: false,            
-                inactiveTimestamp: null,    
+                id: `${startTime}_${index}`, text: textPart, startTime: startTime, endTime: endTime, active: false, color: randomColor, size: FONT_SIZE, 
+                threeGroup: null, letterMeshes: [], 
+                targetX: baseInitialPos.x, targetY: lineTargetY, targetZ: baseInitialPos.z,
+                currentX: baseInitialPos.x, currentY: lineTargetY, currentZ: baseInitialPos.z - 50, 
+                baseScale: 1.0, wasSplit: wasSplit, // Store the flag
+                disposed: false, inactiveTimestamp: null,    
             });
-        }); // End loop through text parts
-    } // --- End loop through SRT blocks ---
-    
+        }); 
+    } 
     console.log(`Parsed ${blocks.length} SRT blocks into ${parsedLyrics.length} lyric objects.`);
-    return parsedLyrics; // Return the array of processed lyric objects
+    return parsedLyrics; 
 }
+
+
 // --- Lyric Object Creation & Cleanup ---
 function createLyricObjects() {
-    console.log(`Creating lyric objects with font: ${FONT_FACE}`);
-    updateViewportDimensions(); // Ensure dimensions are current
+    // console.log(`Creating lyric objects with font: ${FONT_FACE}`);
+    updateViewportDimensions(); 
 
     lyrics.forEach(lyric => {
-        // Skip if previously created and disposed (e.g., after resize)
         if (lyric.disposed || lyric.threeGroup) return; 
 
         const lineGroup = new THREE.Group();
         lineGroup.position.set(lyric.currentX, lyric.currentY, lyric.currentZ); 
         
         const charArray = lyric.text.split('');
-        let currentXOffset = 0;
-        const meshes = [];
-        let totalWidth = 0;
-        const spaceWidth = lyric.size * LETTER_SPACING_FACTOR * 0.25;
-        
+        let currentXOffset = 0; const meshes = []; let totalWidth = 0;
+        const spaceWidth = lyric.size * LETTER_SPACING_FACTOR * 0.5;
         const letterMeshObjects = [];
+
         charArray.forEach(char => {
-            if (char === ' ') {
-                totalWidth += spaceWidth;
-            } else {
-                // Use lyric's size property
-                const letterObj = createLetterMesh(char, lyric.size, lyric.color); 
-                letterMeshObjects.push(letterObj);
-                totalWidth += letterObj.width;
-            }
+            if (char === ' ') { totalWidth += spaceWidth; } 
+            else { const letterObj = createLetterMesh(char, lyric.size, lyric.color); letterMeshObjects.push(letterObj); totalWidth += letterObj.width; }
         });
-        // Add spacing between letters
         totalWidth += Math.max(0, charArray.length - 1) * (lyric.size * LETTER_SPACING_FACTOR * 0.3);
         
-        // *** ADDITION: Clipping Fix - Calculate and Apply Scale ***
-        const maxAllowedWidth = viewportWorldWidth * 0.95; // Use 95% of viewport width
-        let scaleFactor = 1.0;
-        if (totalWidth > 0 && totalWidth > maxAllowedWidth) { // Avoid division by zero
-            scaleFactor = maxAllowedWidth / totalWidth;
-            // console.log(`Lyric "${lyric.text.substring(0,10)}..." too wide, scaling by ${scaleFactor.toFixed(2)}`);
-        }
-        lyric.baseScale = scaleFactor; // Store the calculated base scale
+        const maxAllowedWidth = viewportWorldWidth * 0.95; let scaleFactor = 1.0;
+        if (totalWidth > 0 && totalWidth > maxAllowedWidth) { scaleFactor = maxAllowedWidth / totalWidth; }
+        lyric.baseScale = scaleFactor; 
         lineGroup.scale.set(lyric.baseScale, lyric.baseScale, lyric.baseScale);
 
-        // --- Position letters ---
-        currentXOffset = -totalWidth / 2; // Center based on original calculated width
-        let letterIndex = 0;
-        
+        currentXOffset = -totalWidth / 2; let letterIndex = 0;
         charArray.forEach((char, index) => {
-            if (char === ' ') {
-                currentXOffset += spaceWidth;
-                return; // Skip mesh creation for space
-            }
-            
+            if (char === ' ') { currentXOffset += spaceWidth; return; }
             const { mesh, width: charWidth } = letterMeshObjects[letterIndex++];
-            
-            // Final target position within the group (centered layout)
-            mesh.userData.targetX = currentXOffset + (charWidth / 2);
-            mesh.userData.targetY = 0;
-            mesh.userData.targetZ = index * 0.01; // Slight Z offset for overlap
-
-            // *** MODIFICATION: Softer Initial Animation Setup ***
-            const initialOffsetMagnitude = 30; // Reduced initial distance
-            const randomDirection = new THREE.Vector3(
-                Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5
-            ).normalize().multiplyScalar(initialOffsetMagnitude);
-
-            // Calculate initial position relative to target
-            mesh.userData.initialX = mesh.userData.targetX + randomDirection.x;
-            mesh.userData.initialY = mesh.userData.targetY + randomDirection.y;
-            mesh.userData.initialZ = mesh.userData.targetZ + randomDirection.z + 60; // Start further back/offset Z
-
+            mesh.userData.targetX = currentXOffset + (charWidth / 2); mesh.userData.targetY = 0; mesh.userData.targetZ = index * 0.01; 
+            const initialOffsetMagnitude = 30; 
+            const randomDirection = _tempVec3.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize().multiplyScalar(initialOffsetMagnitude);
+            mesh.userData.initialX = mesh.userData.targetX + randomDirection.x; mesh.userData.initialY = mesh.userData.targetY + randomDirection.y; mesh.userData.initialZ = mesh.userData.targetZ + randomDirection.z + 60; 
             mesh.position.set(mesh.userData.initialX, mesh.userData.initialY, mesh.userData.initialZ);
-            
-            mesh.userData.targetRotX = 0;
-            mesh.userData.targetRotY = 0;
-            mesh.userData.targetRotZ = 0;
-            
-            // Reduced initial random rotation
-            mesh.rotation.set(
-                THREE.MathUtils.randFloatSpread(Math.PI * 0.5),
-                THREE.MathUtils.randFloatSpread(Math.PI * 0.5),
-                THREE.MathUtils.randFloatSpread(Math.PI * 0.25)
-            );
-            
-            lineGroup.add(mesh);
-            meshes.push(mesh);
-            
-            // Advance position for next character
+            mesh.userData.targetRotX = 0; mesh.userData.targetRotY = 0; mesh.userData.targetRotZ = 0;
+            mesh.rotation.set(THREE.MathUtils.randFloatSpread(Math.PI * 0.5), THREE.MathUtils.randFloatSpread(Math.PI * 0.5), THREE.MathUtils.randFloatSpread(Math.PI * 0.25));
+            lineGroup.add(mesh); meshes.push(mesh);
             currentXOffset += charWidth + (lyric.size * LETTER_SPACING_FACTOR * 0.3);
         });
         
-        lyric.threeGroup = lineGroup;
-        lyric.letterMeshes = meshes;
-        lineGroup.visible = false; // Start invisible
-        scene.add(lineGroup); // Add to the main scene
+        lyric.threeGroup = lineGroup; lyric.letterMeshes = meshes;
+        lineGroup.visible = false; scene.add(lineGroup); 
     });
-    
-    // console.log("Created/updated Three.js objects for lyrics.");
 }
 
 function createLetterMesh(char, size, color = LETTER_COLOR) {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const font = `${size}px ${FONT_FACE}`; // Use loaded font face name
-    ctx.font = font;
-
-    const metrics = ctx.measureText(char);
-    const textWidth = metrics.width;
-    const padding = STROKE_WIDTH * 2; 
-    const canvasWidth = THREE.MathUtils.ceilPowerOfTwo(textWidth + padding);
-    // Estimate height based on font size, add padding
-    const fontHeightEstimate = size * 1.2; 
+    const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d');
+    const font = `${size}px ${FONT_FACE}`; ctx.font = font;
+    const metrics = ctx.measureText(char); const textWidth = metrics.width; const padding = STROKE_WIDTH * 2; 
+    const canvasWidth = THREE.MathUtils.ceilPowerOfTwo(textWidth + padding); const fontHeightEstimate = size * 1.2; 
     const canvasHeight = THREE.MathUtils.ceilPowerOfTwo(fontHeightEstimate + padding);
-
-    canvas.width = canvasWidth;
-    canvas.height = canvasHeight;
-
-    // Redraw on resized canvas
-    ctx.font = font;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const centerX = canvasWidth / 2;
-    const centerY = canvasHeight / 2;
-
-    // --- Draw Stroke ---
-    ctx.strokeStyle = STROKE_COLOR; 
-    ctx.lineWidth = STROKE_WIDTH;
-    ctx.lineJoin = 'round'; 
-    ctx.miterLimit = 2;
-    ctx.strokeText(char, centerX, centerY);
-
-    // --- Draw Fill ---
-    ctx.fillStyle = color;
-    ctx.fillText(char, centerX, centerY);
-
-    // --- Create Three.js Objects ---
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.needsUpdate = true;
-    texture.minFilter = THREE.LinearFilter; // Smoother texture sampling
-
-    // Calculate plane dimensions based on canvas aspect ratio to avoid distortion
-    const planeHeight = size * (canvasHeight / fontHeightEstimate); // Scale height proportionally
-    const planeWidth = planeHeight * (canvasWidth / canvasHeight); 
-
+    canvas.width = canvasWidth; canvas.height = canvasHeight;
+    ctx.font = font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const centerX = canvasWidth / 2; const centerY = canvasHeight / 2;
+    ctx.strokeStyle = STROKE_COLOR; ctx.lineWidth = STROKE_WIDTH; ctx.lineJoin = 'round'; ctx.miterLimit = 2;
+    ctx.strokeText(char, centerX, centerY); // Stroke first
+    ctx.fillStyle = color; ctx.fillText(char, centerX, centerY); // Fill on top
+    const texture = new THREE.CanvasTexture(canvas); texture.needsUpdate = true; texture.minFilter = THREE.LinearFilter;
+    const planeHeight = size * (canvasHeight / fontHeightEstimate); const planeWidth = planeHeight * (canvasWidth / canvasHeight); 
     const geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
-    const material = new THREE.MeshBasicMaterial({
-        map: texture,
-        transparent: true,
-        alphaTest: 0.01, // Adjust alphaTest slightly if needed
-        side: THREE.DoubleSide,
-        depthWrite: true // Keep true for now, monitor Z-fighting
-    });
-
+    const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, alphaTest: 0.01, side: THREE.DoubleSide, depthWrite: true }); // Maybe depthWrite: false? Test visually.
     const mesh = new THREE.Mesh(geometry, material);
-    
-    // Return mesh and its calculated *layout* width (used for spacing)
-    // Use textWidth for layout to keep spacing consistent regardless of stroke/padding
     return { mesh, width: textWidth }; 
 }
 
-
 function cleanupLyric(lyric) {
     if (!lyric || !lyric.threeGroup || lyric.disposed) return; 
-
     // console.log(`Cleaning up lyric (ID ${lyric.id}): "${lyric.text.substring(0, 20)}..."`);
-
     lyric.letterMeshes.forEach(mesh => {
-        lyric.threeGroup.remove(mesh); // Remove from parent FIRST is often safer
-        if (mesh.geometry) mesh.geometry.dispose();
+        lyric.threeGroup.remove(mesh); 
+        if (mesh.geometry) { mesh.geometry.dispose(); }
         if (mesh.material) {
-            if (mesh.material.map) mesh.material.map.dispose(); 
+            // *** OPTIMIZATION: Ensure texture map disposal ***
+            if (mesh.material.map instanceof THREE.Texture) { 
+                mesh.material.map.dispose(); 
+            }
             mesh.material.dispose();
         }
     });
-    lyric.letterMeshes = []; // Clear array
-
-    scene.remove(lyric.threeGroup); // Remove group from scene
+    lyric.letterMeshes = []; 
+    scene.remove(lyric.threeGroup); 
     lyric.threeGroup = null; 
-    lyric.disposed = true; // Mark as disposed
+    lyric.disposed = true; 
     lyric.inactiveTimestamp = null;
 }
 
-// --- Update Logic ---
 // --- Update Logic (Handles Visibility, Targets, and Cleanup Trigger) ---
 function updateActiveLyricsThreeJS(currentTimeSeconds) {
     const currentTimeMs = currentTimeSeconds * 1000;
-    // Timing for fade in/out zones (relative to SRT times)
-    const fadeInTime = 150; 
-    const fadeOutTime = 150; 
-    // How long to wait after becoming inactive before cleaning up resources
-    const cleanupDelay = 5000; 
+    const fadeInTime = 150; const fadeOutTime = 150; const cleanupDelay = 5000; 
 
     lyrics.forEach(lyric => {
-        // Skip if this object has already been cleaned up
         if (lyric.disposed) return; 
-
-        const wasActive = lyric.active; // Store previous active state
-
-        // Determine if the lyric should be active based on current time
+        const wasActive = lyric.active; 
         const isInFadeInZone = (currentTimeMs >= lyric.startTime - fadeInTime && currentTimeMs < lyric.startTime);
         const isInActiveZone = (currentTimeMs >= lyric.startTime && currentTimeMs <= lyric.endTime);
         const isInFadeOutZone = (currentTimeMs > lyric.endTime && currentTimeMs <= lyric.endTime + fadeOutTime);
         lyric.active = isInFadeInZone || isInActiveZone || isInFadeOutZone;
+        if (lyric.threeGroup) { lyric.threeGroup.visible = lyric.active; }
         
-        // Update visibility of the Three.js group
-        if (lyric.threeGroup) {
-            lyric.threeGroup.visible = lyric.active; 
-        }
-        
-        // --- When a lyric *just* becomes active ---
+        // When a lyric *just* becomes active 
         if (lyric.active && !wasActive) {
-            // Get a new random target position (within central bounds)
-            const newPos = randomPositionInViewport(
-                -0.2, 0.2,    // TIGHT X bounds
-                -0.15, 0.15,  // TIGHT Y bounds (This Y is only used if NOT split)
-                -180, -90     // TIGHT Z bounds
-            );
-            
-            // Always update Target X and Z for the new appearance location
-            lyric.targetX = newPos.x;
-            lyric.targetZ = newPos.z;
-
-            // *** FIX: Only update Target Y if it was *not* part of a split line ***
-            if (!lyric.wasSplit) { 
-                // If it's a single line, assign the random Y target
-                lyric.targetY = newPos.y; 
-            } 
-            // If lyric.wasSplit is true, targetY retains the stacked value 
-            // calculated in parseSRT and is NOT overwritten here.
-
-            // --- Set initial Current position slightly away from target --- 
-            // This ensures the lerp animation has a visible effect when it appears
-            lyric.currentX = lyric.targetX + (Math.random() - 0.5) * 10; // Small random X offset
-            
-            // Only offset initial Y if it wasn't split. If split, start exactly at calculated Y.
+            const newPos = randomPositionInViewport(-0.2, 0.2, -0.15, 0.15, -180, -90);
+            lyric.targetX = newPos.x; lyric.targetZ = newPos.z;
+            // *** FIX: Only update Y if it was *not* part of a split line ***
+            if (!lyric.wasSplit) { lyric.targetY = newPos.y; } 
+            // Set initial Current position slightly away from target
+            lyric.currentX = lyric.targetX + (Math.random() - 0.5) * 10; 
             lyric.currentY = lyric.wasSplit ? lyric.targetY : lyric.targetY + (Math.random() - 0.5) * 10; 
-            
-            lyric.currentZ = lyric.targetZ - 30; // Start a bit further back for Z animation
+            lyric.currentZ = lyric.targetZ - 30; 
+            if(lyric.threeGroup) { lyric.threeGroup.position.set(lyric.currentX, lyric.currentY, lyric.currentZ); }
+        } 
 
-            // Apply this initial current position immediately if the group exists
-            // (Ensures it doesn't start at the previous position if re-activated quickly)
-            if(lyric.threeGroup) { 
-                 lyric.threeGroup.position.set(lyric.currentX, lyric.currentY, lyric.currentZ);
-                 // Optional: Reset letter positions/rotations here if desired for re-entry effect
-            }
-        } // --- End block for lyric becoming active ---
-
-        // --- Cleanup Logic Trigger ---
-        // If it just became inactive, record the timestamp
-        if (!lyric.active && wasActive && lyric.threeGroup) {
-            lyric.inactiveTimestamp = performance.now(); 
-        }
-
-        // Check if cleanup is due (inactive for long enough)
-        if (!lyric.active && lyric.inactiveTimestamp && (performance.now() - lyric.inactiveTimestamp > cleanupDelay)) {
-            cleanupLyric(lyric); // Call the cleanup function
-        }
-        // --- End Cleanup Logic Trigger ---
-
-    }); // End loop through lyrics
+        // Cleanup Logic Trigger
+        if (!lyric.active && wasActive && lyric.threeGroup) { lyric.inactiveTimestamp = performance.now(); }
+        if (!lyric.active && lyric.inactiveTimestamp && (performance.now() - lyric.inactiveTimestamp > cleanupDelay)) { cleanupLyric(lyric); }
+    }); 
 }
 
+
 function applyLetterScaling(letterMesh, audioLevel, baseScale = 1.0) {
-     // Ensure mesh and world matrix are valid
+    // --- Reverted Optimization: Use Local Vectors for Debugging ---
+    const localTempVecA = new THREE.Vector3(); 
+    const localTempVecB = new THREE.Vector3();
+    // --- End Reverted Optimization ---
+
     if (!letterMesh || !letterMesh.parent) return;
-    letterMesh.updateWorldMatrix(true, false); // Ensure world matrix is up-to-date
+    // Ensure world matrix is up-to-date before getting world position
+    letterMesh.updateWorldMatrix(true, false); 
 
-    const letterPosition = new THREE.Vector3();
-    letterMesh.getWorldPosition(letterPosition);
+    // Use a local temporary vector to store the letter's position
+    const letterPosition = localTempVecB; // Use local vector B
+    letterMesh.getWorldPosition(letterPosition); 
     
-    // Check if mouseWorldPosition is valid
-    if (isNaN(mouseWorldPosition.x) || isNaN(letterPosition.x)) return;
+    // Basic safety check for valid positions
+    if (isNaN(mouseWorldPosition.x) || isNaN(letterPosition.x)) {
+        // console.warn("Invalid position detected in applyLetterScaling"); // Optional warning
+        return; 
+    }
 
-    const distance = letterPosition.distanceTo(mouseWorldPosition);
+    // Use squared distance for initial check (more performant)
+    const distanceSq = letterPosition.distanceToSquared(mouseWorldPosition); 
+    const maxDistance = 150; // The range of the scaling effect
+    const maxDistanceSq = maxDistance * maxDistance; // Compare squared distances
     
-    const maxDistance = 150; // Effective range of mouse scaling
-    const maxScaleFactor = 2.6 + audioLevel * 0.6; // Max relative scale boost
-    const minScaleFactor = 0.7; // Min relative scale reduction
+    // Define how much the scale changes with audio and distance
+    // NOTE: You had 4.6 here in the last paste, reverting to 1.6 for testing baseline
+    const maxScaleFactor = 2.6 + audioLevel * 0.6;  // Max relative scale boost
+    const minScaleFactor = 0.7;  // Min relative scale reduction
     
     let dynamicScaleFactor;
-    if (distance < maxDistance) {
-        // Smoother interpolation (e.g., quadratic easing out)
+    if (distanceSq < maxDistanceSq) {
+        // Calculate distance only if needed for the easing function
+        const distance = Math.sqrt(distanceSq); 
+        // Calculate easing factor (t goes from 1 at distance 0 to 0 at maxDistance)
         const t = 1 - (distance / maxDistance);
+        // Apply ease-out quadratic curve (t*t)
         dynamicScaleFactor = minScaleFactor + (maxScaleFactor - minScaleFactor) * t * t; 
     } else {
+        // If outside maxDistance, use the minimum scale factor
         dynamicScaleFactor = minScaleFactor; 
     }
 
+    // Combine the base scale (for clipping) with the dynamic scale (mouse/audio interaction)
     const finalScale = baseScale * dynamicScaleFactor;
+
+    // Use a local temporary vector for the target scale
+    const targetScaleVec = localTempVecA; // Use local vector A
+    targetScaleVec.set(finalScale, finalScale, finalScale); // Set its components
     
-    const targetScaleVec = new THREE.Vector3(finalScale, finalScale, finalScale);
-    
-    // Safety check for NaN before lerping
-    if (!isNaN(targetScaleVec.x) && !isNaN(targetScaleVec.y) && !isNaN(targetScaleVec.z)) {
-       // Use slerp for scale? No, lerp is fine. Use faster lerp for scale responsiveness.
-       letterMesh.scale.lerp(targetScaleVec, 0.15); 
+    // Safety check for NaN before lerping (can happen with extreme values)
+    if (!isNaN(targetScaleVec.x)) {
+       // Lerp the mesh's current scale towards the calculated target scale
+       letterMesh.scale.lerp(targetScaleVec, 0.15); // Adjust lerp factor (0.1 to 0.2) for desired smoothness
     } else {
-       // Fallback to base scale if calculation failed
-       letterMesh.scale.lerp(new THREE.Vector3(baseScale, baseScale, baseScale), 0.15);
+       // Fallback: If calculation resulted in NaN, lerp towards the base scale
+       const fallbackScaleVec = localTempVecA; // Reuse local vector A
+       fallbackScaleVec.set(baseScale, baseScale, baseScale);
+       letterMesh.scale.lerp(fallbackScaleVec, 0.15);
+       // console.warn("NaN detected in target scale, using baseScale fallback."); // Optional warning
     }
 }
-
 
 // --- Animation Loop ---
 function animate() {
@@ -951,245 +694,162 @@ function animate() {
     const elapsedTime = clock.getElapsedTime();
     const currentPlaybackTime = getCurrentPlaybackTime();
 
+    // --- Calculate Average Active Lyric Z ---
+    let activeZSum = 0;
+    let activeCount = 0;
+    lyrics.forEach(lyric => {
+        // Consider only lyrics that are active and not yet cleaned up
+        if (lyric.active && !lyric.disposed) {
+            // Use targetZ as it's the intended final position for this appearance
+            activeZSum += lyric.targetZ; 
+            activeCount++;
+        }
+    });
+    // Calculate average or reset to default if no lyrics are active
+    if (activeCount > 0) {
+        averageActiveLyricZ = activeZSum / activeCount;
+    } else {
+        averageActiveLyricZ = -150; // Default depth if no lyrics active
+    }
+    // --- End Average Z Calculation ---
+
+
     let audioLevel = 0, bass = 0, mid = 0, treble = 0;
-    
-    // Update Active Lyrics State FIRST
+    // Update lyric active state (doesn't depend on avg Z)
     updateActiveLyricsThreeJS(currentPlaybackTime); 
 
     // Audio Analysis
     if (analyser && (sound.isPlaying || !audioPaused)) {
-        const freqData = analyser.getFrequencyData();
-        // Basic frequency band calculation (adjust ranges as needed)
-        const bassEnd = Math.floor(FFT_SIZE * 0.08); // Lower bass range
-        const midEnd = Math.floor(FFT_SIZE * 0.3);
-        const trebleEnd = Math.floor(FFT_SIZE * 0.5); // Use half FFT size
-
-        let bassSum = 0; for (let i = 1; i < bassEnd; i++) bassSum += freqData[i];
-        bass = (bassSum / (bassEnd - 1 || 1) / 255.0) * 1.5; // Normalize & boost slightly
-
-        let midSum = 0; for (let i = bassEnd; i < midEnd; i++) midSum += freqData[i];
-        mid = (midSum / (midEnd - bassEnd || 1) / 255.0) * 1.5;
-
-        let trebleSum = 0; for (let i = midEnd; i < trebleEnd; i++) trebleSum += freqData[i];
-        treble = (trebleSum / (trebleEnd - midEnd || 1) / 255.0) * 1.5;
-        
-        audioLevel = Math.max(bass, mid, treble) * 0.6 + (analyser.getAverageFrequency() / 255.0) * 0.4; // Weighted average
-        audioLevel = Math.min(1.0, audioLevel * 1.2); // Clamp and boost overall level slightly
-
-    } else {
-        // Simple preview animation if audio not playing/loaded
-        audioLevel = Math.abs(Math.sin(elapsedTime * 1.5)) * 0.6;
-        bass = mid = treble = audioLevel;
-        // No need to manage lyric visibility here, updateActiveLyrics handles it based on time 0 or paused time
+        // ... (audio analysis code remains the same) ...
+         const freqData = analyser.getFrequencyData();
+         const bassEnd = Math.floor(FFT_SIZE * 0.08); const midEnd = Math.floor(FFT_SIZE * 0.3); const trebleEnd = Math.floor(FFT_SIZE * 0.5); 
+         let bassSum = 0; for (let i = 1; i < bassEnd; i++) bassSum += freqData[i]; bass = (bassSum / (bassEnd - 1 || 1) / 255.0) * 1.5; 
+         let midSum = 0; for (let i = bassEnd; i < midEnd; i++) midSum += freqData[i]; mid = (midSum / (midEnd - bassEnd || 1) / 255.0) * 1.5;
+         let trebleSum = 0; for (let i = midEnd; i < trebleEnd; i++) trebleSum += freqData[i]; treble = (trebleSum / (trebleEnd - midEnd || 1) / 255.0) * 1.5;
+         audioLevel = Math.min(1.0, (Math.max(bass, mid, treble) * 0.6 + (analyser.getAverageFrequency() / 255.0) * 0.4) * 1.2);
+    } else { 
+        audioLevel = Math.abs(Math.sin(elapsedTime * 1.5)) * 0.6; bass = mid = treble = audioLevel;
     }
-    
+
     // Update Camera
     updateCamera(deltaTime, audioLevel, bass, elapsedTime);
 
-    // Update visible lyric objects
+    // --- Update visible lyric objects ---
     lyrics.forEach(lyric => {
-        // *** Check if active AND not disposed ***
         if (lyric.active && lyric.threeGroup && !lyric.disposed) { 
-            
-            // Lerp group position smoothly
-            const groupMoveSpeed = 0.06; // Slightly faster group lerp
-            lyric.currentX = THREE.MathUtils.lerp(lyric.currentX, lyric.targetX, groupMoveSpeed);
-            lyric.currentY = THREE.MathUtils.lerp(lyric.currentY, lyric.targetY, groupMoveSpeed);
-            lyric.currentZ = THREE.MathUtils.lerp(lyric.currentZ, lyric.targetZ, groupMoveSpeed);
-            lyric.threeGroup.position.set(lyric.currentX, lyric.currentY, lyric.currentZ);
+            // ... (Group position lerp remains the same) ...
+             const groupMoveSpeed = 0.06; 
+             lyric.currentX = THREE.MathUtils.lerp(lyric.currentX, lyric.targetX, groupMoveSpeed);
+             lyric.currentY = THREE.MathUtils.lerp(lyric.currentY, lyric.targetY, groupMoveSpeed);
+             lyric.currentZ = THREE.MathUtils.lerp(lyric.currentZ, lyric.targetZ, groupMoveSpeed);
+             lyric.threeGroup.position.set(lyric.currentX, lyric.currentY, lyric.currentZ);
 
             // Update individual letters
             lyric.letterMeshes.forEach((mesh) => {
-                // *** MODIFICATION: Adjusted animation speeds ***
-                const letterMoveSpeed = 0.15; // Faster assembly
-                const letterRotSpeed = 0.15; // Faster rotation settle
+                // ... (Letter position/rotation lerp remains the same using _temp vars) ...
+                 const letterMoveSpeed = 0.15; const letterRotSpeed = 0.15; 
+                 mesh.position.lerp( _tempVec3.set(mesh.userData.targetX, mesh.userData.targetY, mesh.userData.targetZ), letterMoveSpeed );
+                 _tempEuler.set(mesh.userData.targetRotX, mesh.userData.targetRotY, mesh.userData.targetZ);
+                 _tempQuat.setFromEuler(_tempEuler); 
+                 mesh.quaternion.slerp(_tempQuat, letterRotSpeed);
 
-                // Lerp position towards target within the group
-                mesh.position.lerp(
-                    new THREE.Vector3(mesh.userData.targetX, mesh.userData.targetY, mesh.userData.targetZ),
-                    letterMoveSpeed
-                );
-                
-                // Slerp rotation towards target (flat)
-                const targetQuaternion = new THREE.Quaternion().setFromEuler(
-                    new THREE.Euler(mesh.userData.targetRotX, mesh.userData.targetRotY, mesh.userData.targetRotZ)
-                );
-                mesh.quaternion.slerp(targetQuaternion, letterRotSpeed);
-                
-                // Apply interactive scaling (passing base scale)
+                // *** Call applyLetterScaling *** // It now implicitly uses the updated mouseWorldPosition which is based on averageActiveLyricZ
                 applyLetterScaling(mesh, audioLevel, lyric.baseScale); 
             });
         }
-    });
+    }); // --- End lyric update loop ---
 
     // === PING-PONG RENDERING ===
-    if (!renderer || !renderTargetA || !renderTargetB || !feedbackShader || !glitchShader || !quadScene || !quadCamera) {
-        console.error("Rendering components not ready!");
-        return; // Skip rendering if setup isn't complete
-    }
+    if (!renderer || !renderTargetA || !renderTargetB || !feedbackShader || !glitchShader || !quadScene || !quadCamera) return; // Sanity check
     
-    // STEP 1: Render main scene (lyrics, etc.) to Target A
-    renderer.setRenderTarget(renderTargetA);
-    renderer.clear();
-    renderer.render(scene, camera);
+    // STEP 1: Render main scene to Target A
+    renderer.setRenderTarget(renderTargetA); renderer.clear(); renderer.render(scene, camera);
     
     // STEP 2: Prepare Feedback Pass
-    feedbackShader.uniforms.tDiffuse.value = renderTargetA.texture; // Current scene
-    feedbackShader.uniforms.prevFrame.value = renderTargetB.texture; // Previous feedback result
-    feedbackShader.uniforms.time.value = elapsedTime;
-    feedbackShader.uniforms.audioLevel.value = audioLevel;
-    // Modulate feedback amount by audio level
-    feedbackShader.uniforms.feedbackAmount.value = THREE.MathUtils.lerp(0.65, 0.95, audioLevel * 0.3); 
+    feedbackShader.uniforms.tDiffuse.value = renderTargetA.texture; feedbackShader.uniforms.prevFrame.value = renderTargetB.texture; 
+    feedbackShader.uniforms.time.value = elapsedTime; feedbackShader.uniforms.audioLevel.value = audioLevel;
+    feedbackShader.uniforms.feedbackAmount.value = THREE.MathUtils.lerp(0.40, 0.97, audioLevel * 0.8); 
 
-    // STEP 3: Render Feedback Effect (using Quad) to a Temporary Target
-    // Important: Use a *new* temporary target to avoid reading/writing same texture
-    const tempTarget = renderTargetA.clone(); // Clone structure/size of A
-    quadScene.clear(); // Clear previous quad
-    quadScene.add(feedbackQuad); // Add quad with feedback shader
-    renderer.setRenderTarget(tempTarget);
-    renderer.clear();
-    renderer.render(quadScene, quadCamera);
+    // STEP 3: Render Feedback Effect to a Temporary Target
+    const tempTarget = renderTargetA.clone(); // Avoid direct reuse if possible, cloning ensures size/format match
+    quadScene.clear(); quadScene.add(feedbackQuad); 
+    renderer.setRenderTarget(tempTarget); renderer.clear(); renderer.render(quadScene, quadCamera);
     
     // STEP 4: Prepare Glitch Pass
-    glitchShader.uniforms.tDiffuse.value = tempTarget.texture; // Input is feedback result
-    glitchShader.uniforms.time.value = elapsedTime;
-    glitchShader.uniforms.audioLevel.value = audioLevel;
-    // Modulate glitch intensity more strongly by audio
-    glitchShader.uniforms.intensity.value = THREE.MathUtils.lerp(0.05, 0.1, audioLevel); 
+    glitchShader.uniforms.tDiffuse.value = tempTarget.texture; glitchShader.uniforms.time.value = elapsedTime; glitchShader.uniforms.audioLevel.value = audioLevel;
+    glitchShader.uniforms.intensity.value = THREE.MathUtils.lerp(0.05, 0.2, audioLevel); 
     
-    // STEP 5: Render Glitch Effect (using Quad) to the Screen
-    quadScene.clear();
-    quadScene.add(outputQuad); // Add quad with glitch shader
-    renderer.setRenderTarget(null); // Render to canvas
-    renderer.clear();
-    renderer.render(quadScene, quadCamera);
+    // STEP 5: Render Glitch Effect to the Screen
+    quadScene.clear(); quadScene.add(outputQuad); 
+    renderer.setRenderTarget(null); renderer.clear(); renderer.render(quadScene, quadCamera);
     
     // STEP 6: Copy the feedback result (from tempTarget) to Target B for the *next* frame
-    // Use a simple copy material for efficiency
+    // OPTIMIZATION: Reuse a single copy material/quad if possible (create outside loop)
+    // For simplicity here, creating temporary ones each frame (minor overhead)
     const copyMaterial = new THREE.MeshBasicMaterial({ map: tempTarget.texture });
     const copyQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), copyMaterial);
-    quadScene.clear();
-    quadScene.add(copyQuad);
-    renderer.setRenderTarget(renderTargetB); // Render into B
-    renderer.clear();
-    renderer.render(quadScene, quadCamera);
+    quadScene.clear(); quadScene.add(copyQuad);
+    renderer.setRenderTarget(renderTargetB); renderer.clear(); renderer.render(quadScene, quadCamera);
     
-    // STEP 7: Cleanup temporary resources for this frame
-    renderer.setRenderTarget(null); // Reset render target
-    tempTarget.dispose(); // Dispose the temporary render target
-    copyMaterial.map = null; // Break reference
-    copyMaterial.dispose(); // Dispose the copy material
-    // (copyQuad geometry is reused, no need to dispose geometry each frame)
-
-    // The next frame will use renderTargetB as prevFrame input
+    // STEP 7: Cleanup temporary resources
+    renderer.setRenderTarget(null); 
+    tempTarget.dispose(); 
+    copyMaterial.map = null; copyMaterial.dispose(); 
+    // copyQuad geometry is cheap, managed by THREE normally
 }
 
 // --- Camera Update ---
-// --- Camera Update ---
-// *** FIX: Add elapsedTime as a parameter ***
-function updateCamera(deltaTime, audioLevel, bassLevel, elapsedTime) { 
-    const baseDistance = 150; // Base distance from origin
-    // Modulate distance more subtly, primarily based on bass/overall level
+function updateCamera(deltaTime, audioLevel, bassLevel, elapsedTime) { // Include elapsedTime
+    const baseDistance = 250; 
     const audioDistanceFactor = (bassLevel * 0.6 + audioLevel * 0.4) * 60; 
     const targetDistance = baseDistance - audioDistanceFactor;
-    
-    // Smoothly interpolate current distance towards target distance
-    camera.position.lerp(
-         camera.position.clone().normalize().multiplyScalar(targetDistance), 
-         0.08 // Speed of distance change
-    );
+    // Use temporary vector for lerp target
+    camera.position.lerp( _tempVec3.copy(camera.position).normalize().multiplyScalar(targetDistance), 0.08 );
 
-    // --- Orbit Calculation based on Mouse/Touch Input ---
-    let targetX = 0;
-    let targetY = 0;
+    let targetX = 0; let targetY = 0;
+    if (isInteracting) { targetX = targetMouseX; targetY = targetMouseY; } 
+    else { const time = elapsedTime * 0.5; targetX = Math.sin(time * 0.6) * windowHalfX * 0.1; targetY = Math.cos(time * 0.4) * windowHalfY * 0.1; }
 
-    if (isInteracting) {
-        // Use the raw pixel offset directly for orbit control feel
-        targetX = targetMouseX; 
-        targetY = targetMouseY;
-    } else {
-        // Gentle idle drift when not interacting
-        // *** FIX: elapsedTime is now available here ***
-        const time = elapsedTime * 0.5; // Slower drift (Now works!)
-        targetX = Math.sin(time * 0.6) * windowHalfX * 0.1; // Drift based on % of window width
-        targetY = Math.cos(time * 0.4) * windowHalfY * 0.1;
-    }
-    
-    // Smoothly interpolate the controlling mouse values
-    const lerpFactor = isInteracting ? 0.15 : 0.04; // Faster response when interacting
-    mouseX = THREE.MathUtils.lerp(mouseX, targetX, lerpFactor);
-    mouseY = THREE.MathUtils.lerp(mouseY, targetY, lerpFactor);
+    const lerpFactor = isInteracting ? 0.15 : 0.04; 
+    mouseX = THREE.MathUtils.lerp(mouseX, targetX, lerpFactor); mouseY = THREE.MathUtils.lerp(mouseY, targetY, lerpFactor);
 
-    // Define sensitivity (radians per pixel) - smaller value = less sensitive
     const rotationSensitivity = 0.0025; 
-
-    // Calculate angles based on smoothed mouseX/Y values
-    // Horizontal angle (around Y axis) - rotates left/right
-    const horizontalAngle = -mouseX * rotationSensitivity; 
-    // Vertical angle (around X axis) - rotates up/down
-    const verticalAngle = -mouseY * rotationSensitivity; 
-
-    // Clamp vertical angle to prevent flipping over
-    const maxVerticalAngle = Math.PI * 0.45; // Limit to slightly less than +/- 90 degrees
+    const horizontalAngle = -mouseX * rotationSensitivity; const verticalAngle = -mouseY * rotationSensitivity; 
+    const maxVerticalAngle = Math.PI * 0.45; 
     const clampedVerticalAngle = THREE.MathUtils.clamp(verticalAngle, -maxVerticalAngle, maxVerticalAngle);
-
-    // Calculate new position using spherical coordinates relative to origin (0,0,0)
-    const currentDistance = camera.position.length(); // Use the lerped distance
-    const position = new THREE.Vector3();
-    
-    // Calculate position based on angles (Y-up standard)
+    const currentDistance = camera.position.length(); 
+    // Reuse temporary vector for position calculation
+    const position = _tempVec3; 
     position.x = currentDistance * Math.sin(horizontalAngle) * Math.cos(clampedVerticalAngle);
     position.y = currentDistance * Math.sin(clampedVerticalAngle);
     position.z = currentDistance * Math.cos(horizontalAngle) * Math.cos(clampedVerticalAngle);
-
-    // Apply the calculated position
     camera.position.copy(position);
-    
-    // Always look at the center
-    camera.lookAt(0, 0, 0);
+    camera.lookAt(0, 0, 0); // Use origin as target vector (0,0,0)
 }
 
 
 // --- Event Handlers ---
 function onWindowResize() {
-    const width = window.innerWidth;
-    const height = window.innerHeight;
+    const width = window.innerWidth; const height = window.innerHeight;
+    windowHalfX = width / 2; windowHalfY = height / 2;
+    camera.aspect = width / height; camera.updateProjectionMatrix();
+    updateViewportDimensions(); // Update world dimensions
 
-    windowHalfX = width / 2;
-    windowHalfY = height / 2;
-
-    camera.aspect = width / height;
-    camera.updateProjectionMatrix();
-
-    // Recalculate viewport world dimensions used for positioning/clipping
-    updateViewportDimensions(); 
-
-    renderer.setSize(width, height);
+    // *** OPTIMIZATION: Apply same resolution scale here ***
     const pixelRatio = renderer.getPixelRatio();
-    const targetWidth = Math.floor(width * pixelRatio);
-    const targetHeight = Math.floor(height * pixelRatio);
+    const targetWidth = Math.floor(width * pixelRatio * resolutionScale);
+    const targetHeight = Math.floor(height * pixelRatio * resolutionScale);
 
-    // Resize post-processing targets
+    renderer.setSize(width, height); // Renderer still uses full size
+
+    // Resize post-processing targets to scaled resolution
     renderTargetA?.setSize(targetWidth, targetHeight);
     renderTargetB?.setSize(targetWidth, targetHeight);
-
-    // Optional: Re-evaluate clipping for existing lyrics if needed
-    // lyrics.forEach(lyric => {
-    //     if (lyric.threeGroup && !lyric.disposed) {
-    //         // Recalculate totalWidth based on original letters
-    //         // Recalculate scaleFactor based on new viewportWorldWidth
-    //         // Update lyric.baseScale and lyric.threeGroup.scale
-    //     }
-    // });
-    // console.log("Window resized and components updated.");
 }
 
 // --- Run ---
 init().catch(err => { 
     console.error("Initialization failed:", err);
-    // Display a user-friendly error message on the page if possible
     const container = document.getElementById('visualizer-container');
-    if (container) {
-        container.innerHTML = `<p style="color: red; padding: 20px;">Error initializing visualizer. Please check console for details.</p>`;
-    }
+    if (container) { container.innerHTML = `<p style="color: red; padding: 20px;">Error initializing visualizer. Please check console for details.</p>`; }
 });
