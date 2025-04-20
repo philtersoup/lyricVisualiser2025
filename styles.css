@@ -1,32 +1,95 @@
+/* Basic Reset and Body Styling */
 html, body {
     height: 100%;
     width: 100%;
     margin: 0;
     padding: 0;
-    overflow: hidden;
-    overscroll-behavior: none;
-    -webkit-overflow-scrolling: auto;
-    touch-action: none;
+    overflow: hidden; /* Prevent scrollbars */
+    background-color: #000; /* Base background */
+    color: #fff; /* Default text color */
+    font-family: sans-serif;
+    overscroll-behavior: none; /* Prevent pull-to-refresh/bounce */
+    -webkit-overflow-scrolling: auto; /* Not strictly needed with overflow: hidden */
+    touch-action: none; /* Prevent default touch actions like scrolling/zooming */
 }
 
-#visualizer-container {
-    position: fixed;
+/* Ensure canvas fills its container */
+canvas {
+    display: block;
+    position: absolute; /* Needed if container is absolute */
     top: 0;
     left: 0;
     width: 100%;
     height: 100%;
 }
 
+/* Container for the visualizer canvas */
+#visualizer-container {
+    position: fixed; /* Use fixed to ensure it stays put */
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1; /* Behind controls and loader */
+}
+
+/* Loading Indicator Styling */
+#loading-indicator {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.95); /* Dark background */
+    color: #eee;
+    font-size: 1.5em;
+    display: flex;
+    flex-direction: column; /* Stack text and spinner */
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    z-index: 1000; /* Highest z-index */
+    opacity: 1;
+    transition: opacity 0.7s ease-out; /* Smooth fade-out */
+}
+
+/* Class to hide the loading indicator */
+#loading-indicator.hidden {
+  opacity: 0;
+  pointer-events: none; /* Allow interaction with content below */
+}
+
+/* Optional Spinner Styles */
+/*
+.spinner {
+    border: 4px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    border-top: 4px solid #fff;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+    margin-top: 20px;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+*/
+
+
+/* Controls Container Styling */
 #controls {
     position: fixed;
-    bottom: 20px;
+    bottom: 30px; /* Slightly more space from bottom */
     left: 0;
     width: 100%;
     display: flex;
     justify-content: center;
-    z-index: 10;
+    z-index: 10; /* Above canvas, below loader */
 }
 
+/* General Button Styling */
 button {
     background-color: rgba(255, 255, 255, 0.2);
     color: white;
@@ -36,9 +99,40 @@ button {
     margin: 0 10px;
     cursor: pointer;
     font-size: 16px;
-    transition: all 0.3s ease;
+    transition: background-color 0.3s ease; /* Only transition background */
+    -webkit-tap-highlight-color: transparent; /* Remove tap highlight on mobile */
 }
 
 button:hover {
     background-color: rgba(255, 255, 255, 0.4);
+}
+
+button:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+/* Specific style for the dynamically added Gyro Button */
+#enable-motion-btn {
+    /* Overrides general button style where needed */
+    position: absolute; 
+    top: 50%; 
+    left: 50%;
+    transform: translate(-50%, -50%); 
+    padding: 15px;
+    font-size: 1.2em; 
+    z-index: 1001; /* Above loader background */
+    background-color: #333; /* Darker background */
+    border-radius: 5px; /* Less rounded */
+    border: 1px solid #555;
+}
+
+#enable-motion-btn:hover {
+     background-color: #444;
+}
+
+#enable-motion-btn:disabled {
+     background-color: #222;
+     color: #888;
+     border-color: #444;
 }
