@@ -717,7 +717,7 @@ function updateCamera(deltaTime, audioLevel, bassLevel) {
     // Calculate horizontal (around Y-axis) and vertical (around X-axis) angles
     // We add PI to horizontal angle to start looking from +Z axis if mouseX is 0
     const horizontalAngle = mouseX * rotationSensitivity; // Azimuth
-    const verticalAngle = -mouseY * rotationSensitivity * 1.0; // Elevation (inverted Y, reduced sensitivity)
+    const verticalAngle = -mouseY * rotationSensitivity * 1.5; // Elevation (inverted Y, reduced sensitivity)
 
     // Clamp vertical angle to prevent flipping over the poles
     const maxVerticalAngle = Math.PI / 2 - 0.1; // Limit to slightly less than 90 degrees
