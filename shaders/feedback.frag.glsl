@@ -1,7 +1,7 @@
 // File: shaders/feedback.frag.glsl
 // Simulates video feedback (camera pointed at screen)
 
-precision highp float; // Using higher precision for better quality
+precision mediump float; // Using higher precision for better quality
 
 varying vec2 vUv;
 
