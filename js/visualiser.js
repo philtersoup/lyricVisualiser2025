@@ -77,7 +77,7 @@ const FEEDBACK_VERTEX_PATH = '/shaders/feedback.vert.glsl';
 const FEEDBACK_FRAGMENT_PATH = '/shaders/feedback.frag.glsl';
 const GLITCH_VERTEX_PATH = '/shaders/glitch.vert.glsl';
 const GLITCH_FRAGMENT_PATH = '/shaders/glitch.frag.glsl';
->>>>>>> threejs
+
 
 // --- Constants ---
 const FONT_SIZE = 50; // Base font size for atlas generation
