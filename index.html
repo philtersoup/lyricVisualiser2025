@@ -2,24 +2,38 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Lyric Visualizer 3D</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/addons/p5.sound.min.js"></script>
-    <link rel="stylesheet" href="styles.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"> 
+    <title>philterSoup x Karshni: VESSELS</title>
+    <link rel="stylesheet" href="styles.css"> 
+    <style>
+        /* Minimal critical style to prevent flash of unstyled content */
+        body { margin: 0; background-color: #000; }
+    </style>
 </head>
 <body>
+
+    <div id="loading-indicator">
+        <p id="loading-text">Loading Visualizer...</p> 
+        </div>
+
     <div id="visualizer-container"></div>
+
     <div id="controls">
         <button id="play-btn">Play</button>
         <button id="pause-btn">Pause</button>
     </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.163.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.163.0/examples/jsm/"
+            }
+        }
+    </script>
     
-    <!-- Load shader scripts -->
-    <script src="shaders/glitchShader.js"></script>
-    <script src="shaders/feedbackShader.js"></script>
-    
-    <!-- Load main visualizer code -->
-    <script src="js/visualiser.js"></script>
+    <script type="module" src="js/visualiser.js"></script> 
+    <!-- {/* Ensure this path is correct */} -->
+
 </body>
 </html>
