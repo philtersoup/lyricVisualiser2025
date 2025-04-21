@@ -18,7 +18,7 @@ let stats;
 let atlasTexture = null;
 let atlasMaterial = null;
 const charUVData = {}; // Stores { x, y, width, height, glyphWidth } for each char on the atlas
-const ATLAS_PADDING = 20; // Pixels between chars on atlas
+const ATLAS_PADDING = 30; // Pixels between chars on atlas
 const ATLAS_CHAR_SET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,!?'()[]{}<>:-_=+* "; //
 
 // Post-Processing
@@ -33,7 +33,7 @@ let copyMaterial, copyQuad; // For the copy pass
 // Audio
 // ... (rest of audio variables)
 let listener, sound, audioLoader, analyser;
-const FFT_SIZE = 256;
+const FFT_SIZE = 512;
 
 // Lyrics
 // ... (rest of lyrics variables)
@@ -84,7 +84,8 @@ let FONT_FACE = 'sans-serif'; // Default, updated by loadCustomFont
 const FONT_FILE_PATH = 'Blackout Midnight.ttf';
 const FONT_FAMILY_NAME = 'Blackout Midnight';
 // LETTER_COLOR is now handled by vertex colors, atlas uses white
-const LETTER_SPACING = 0;
+const LETTER_SPACING = 1;
+// const RENDER_SCALE_MULTIPLIER = 1.8;
 const STROKE_WIDTH = 0; // Stroke width on the atlas
 const STROKE_COLOR = 'red'; // Stroke color on the atlas
 let customFontLoaded = false;
@@ -358,11 +359,12 @@ async function loadCustomFont() {
     }
 }
 
+// --- createFontAtlas Function (Corrected Drawing Order) ---
 function createFontAtlas() {
     console.log("Creating font atlas...");
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
-    const font = `${FONT_SIZE}px ${FONT_FACE}`;
+    const font = `${FONT_SIZE}px ${FONT_FACE}`; // Uses global FONT_SIZE & FONT_FACE
     ctx.font = font;
 
     // --- Calculate Atlas Size ---
@@ -371,24 +373,26 @@ function createFontAtlas() {
     const charMetrics = {};
 
     // Calculate consistent block height FIRST
-    const charBlockHeight = Math.ceil(FONT_SIZE * 1.3 + ATLAS_PADDING * 2 + STROKE_WIDTH * 2); // Use ceil for integer pixels
+    // Uses global ATLAS_PADDING & STROKE_WIDTH
+    const charBlockHeight = Math.ceil(FONT_SIZE * 1.3 + ATLAS_PADDING * 2 + STROKE_WIDTH * 2);
 
+    // Uses global ATLAS_CHAR_SET
     for (const char of ATLAS_CHAR_SET) {
         const metrics = ctx.measureText(char);
-        // Use calculated block height consistently
+        // Calculate width needed for this char block on the atlas
         const width = Math.max(1, Math.ceil(metrics.width)) + ATLAS_PADDING * 2 + STROKE_WIDTH * 2;
         const height = charBlockHeight; // Use the consistent block height
         charMetrics[char] = {
-             width: width, // Canvas space needed (block width)
-             height: height, // Canvas space needed (block height)
-             glyphWidth: Math.max(1, metrics.width) // Actual glyph width for layout
+            width: width, // Block width on canvas
+            height: height, // Block height on canvas
+            glyphWidth: Math.max(1, metrics.width) // Actual glyph width (for layout/geometry)
         };
         maxCharWidth = Math.max(maxCharWidth, width);
         totalWidth += width;
     }
 
-    // Simple layout: single row
-    const atlasHeight = THREE.MathUtils.ceilPowerOfTwo(charBlockHeight); // POT Atlas height based on consistent block height
+    // Simple layout: single row, calculate power-of-two dimensions
+    const atlasHeight = THREE.MathUtils.ceilPowerOfTwo(charBlockHeight);
     const atlasWidth = THREE.MathUtils.ceilPowerOfTwo(totalWidth);
     canvas.width = atlasWidth;
     canvas.height = atlasHeight;
@@ -396,56 +400,78 @@ function createFontAtlas() {
 
     // --- Configure context for drawing ---
     ctx.font = font;
-    ctx.fillStyle = '#FFFFFF'; // Fill with white
-    ctx.strokeStyle = STROKE_COLOR;
-    ctx.lineWidth = STROKE_WIDTH;
-    ctx.lineJoin = 'round'; ctx.miterLimit = 2;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#FFFFFF'; // Fill color (White)
+    ctx.strokeStyle = STROKE_COLOR; // Stroke color (from global constant, e.g., 'red' or '#000000')
+    ctx.lineWidth = STROKE_WIDTH;   // Stroke width (from global constant, e.g., 2)
+    ctx.lineJoin = 'round'; // Style for stroke corners
+    ctx.miterLimit = 2;     // Style for stroke corners
+    ctx.textAlign = 'center'; // Center horizontally
+    ctx.textBaseline = 'middle'; // Center vertically
 
     // --- Draw characters and store UV data ---
     let currentX = 0;
     for (const char of ATLAS_CHAR_SET) {
         const metrics = charMetrics[char];
-        const charWidth = metrics.width; // Block width for this char
-        const charHeight = metrics.height; // Block height for this char (should be charBlockHeight)
+        const charWidth = metrics.width;  // Block width for this char
+        const charHeight = metrics.height; // Block height for this char
 
-        // Center within the *block height*, placed near top of atlas row
+        // Calculate center position within the block area on the canvas row
         const centerX = currentX + charWidth / 2;
-        const centerY = charHeight / 2; // <<< Center within the block height
+        const centerY = charHeight / 2; // Center within the block height
 
-        // Draw stroke/fill
-        if (STROKE_WIDTH > 0) ctx.strokeText(char, centerX, centerY);
+        // --- CORRECTED DRAWING ORDER ---
+        // 1. Draw the fill first
         ctx.fillText(char, centerX, centerY);
 
-        // Store UV data using BLOCK dimensions
+        // 2. Draw the stroke second (on top of the fill) if width > 0
+        if (STROKE_WIDTH > 0) {
+            ctx.strokeText(char, centerX, centerY);
+        }
+        // --- End Corrected Order ---
+
+        // Store UV data based on the BLOCK's position and dimensions on the atlas
+        // Uses global charUVData object
         charUVData[char] = {
-            x: currentX,
-            y: 0,             // Block starts at top of atlas row
-            width: charWidth, // Use block width
-            height: charHeight,// <<< USE CORRECT CALCULATED BLOCK HEIGHT
-            glyphWidth: metrics.glyphWidth
+            x: currentX,      // X position of the block start
+            y: 0,             // Y position of the block start (top of the atlas row)
+            width: charWidth, // Width of the block
+            height: charHeight,// Height of the block
+            glyphWidth: metrics.glyphWidth // Store the measured glyph width separately
         };
 
+        // Move to the next character's position
         currentX += charWidth;
     }
 
     // --- Create Texture and Material ---
-    // ... (Texture/Material creation remains the same) ...
+    // Uses global atlasTexture & atlasMaterial variables
     atlasTexture = new THREE.CanvasTexture(canvas);
     atlasTexture.minFilter = THREE.LinearFilter;
     atlasTexture.magFilter = THREE.LinearFilter;
-    atlasTexture.needsUpdate = true;
+    atlasTexture.needsUpdate = true; // Important after drawing to canvas
 
     atlasMaterial = new THREE.MeshBasicMaterial({
         map: atlasTexture,
-        transparent: true,
-        side: THREE.DoubleSide,
-        vertexColors: true,
-        blending: THREE.NormalBlending // Try different blending modes if needed
-      });
+        transparent: true,         // Needed for transparent background of atlas
+        side: THREE.DoubleSide,    // Render both sides (optional, good for rotation)
+        vertexColors: true,        // Enable vertex colors set in createLetterMesh
+        blending: THREE.NormalBlending, // Standard blending mode
+        depthWrite: false // <--- ADD THIS LINE
+    });
 
-    console.log("Font atlas created successfully (with corrected height logic).");
-}
+    console.log("Font atlas created successfully (Fill/Stroke order corrected).");
+
+    // --- Optional: Visualize the generated atlas canvas ---
+    // canvas.style.border = "1px solid red";
+    // canvas.style.position = "absolute";
+    // canvas.style.top = "10px";
+    // canvas.style.left = "10px";
+    // canvas.style.zIndex = "2000";
+    // canvas.style.backgroundColor = "rgba(0, 0, 255, 0.1)";
+    // document.body.appendChild(canvas);
+    
+
+} // --- End of createFontAtlas ---
 
 
 // --- Shader Loading ---
@@ -717,45 +743,57 @@ async function init() {
 // --- Post-Processing Setup ---
 // ... (setupPostProcessing remains the same) ...
 // --- Post-Processing Setup ---
+// --- Post-Processing Setup ---
 function setupPostProcessing(shaderCode) {
-    console.log("Setting up ping-pong feedback post-processing...");
+    console.log("Setting up post-processing (Using NearestFilter)..."); // Updated log
 
     // Define width and height based on current window size
     const width = window.innerWidth;
     const height = window.innerHeight;
 
-    const targetOptions = { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat, type: THREE.UnsignedByteType, stencilBuffer: false };
-    const pixelRatio = renderer.getPixelRatio();
-    // Calculate scaled dimensions for render targets
-    const targetWidth = Math.floor(width * pixelRatio * resolutionScale);
-    const targetHeight = Math.floor(height * pixelRatio * resolutionScale);
-    console.log(`Setting post-processing resolution to: ${targetWidth}x${targetHeight} (Scale: ${resolutionScale})`);
+    // *** Define Render Target Options using NearestFilter ***
+    const targetOptions = {
+        minFilter: THREE.NearestFilter, // Use NearestFilter
+        magFilter: THREE.NearestFilter, // Use NearestFilter
+        format: THREE.RGBAFormat,       // Keep RGBA for alpha
+        type: THREE.UnsignedByteType, // Standard type
+        stencilBuffer: false            // No stencil needed
+    };
+    // *** --- ***
 
-    // --- Dispose existing resources if function is called again (e.g., on resize) ---
+    const pixelRatio = renderer.getPixelRatio(); // Get device pixel ratio
+    // Calculate scaled dimensions for render targets
+    const targetWidth = Math.floor(width * pixelRatio * resolutionScale); // Use global resolutionScale
+    const targetHeight = Math.floor(height * pixelRatio * resolutionScale);
+    console.log(`Setting post-processing resolution to: ${targetWidth}x${targetHeight} (Scale: ${resolutionScale}, Filter: Nearest)`); // Updated log
+
+    // --- Dispose existing resources FIRST ---
+    // Important if this function is ever called again (e.g., on resize needing recreation)
     renderTargetA?.dispose();
     renderTargetB?.dispose();
     feedbackShader?.dispose();
     glitchShader?.dispose();
     copyMaterial?.dispose();
-    // Geometry is shared, dispose it only if absolutely necessary or manage elsewhere
-    // feedbackQuad?.geometry?.dispose(); // Avoid disposing shared geometry here
-    // ---
+    // Note: Geometry is shared, don't dispose it here unless managed carefully
+    // quadCamera and quadScene usually don't need disposal unless structure changes
+    // --- End Disposal ---
 
-    // --- Create Render Targets ---
+    // --- Create Render Targets with new options ---
     renderTargetA = new THREE.WebGLRenderTarget(targetWidth, targetHeight, targetOptions);
     renderTargetB = new THREE.WebGLRenderTarget(targetWidth, targetHeight, targetOptions);
 
     // --- Setup Orthographic Camera and Scene for fullscreen quads ---
-    // No need to recreate if they exist? Or recreate for simplicity? Recreating is safer.
+    // Can reuse if they exist, or recreate; recreating is safer.
     quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     quadScene = new THREE.Scene();
 
-    // --- Create Shader Materials (with explicit uniforms object) ---
+    // --- Create Shader Materials ---
+    // Feedback Shader (ensure it uses shaderCode.feedbackVS/FS)
     feedbackShader = new THREE.ShaderMaterial({
-        uniforms: { // Explicitly define uniform structure
+        uniforms: {
             tDiffuse: { value: null },
             prevFrame: { value: null },
-            feedbackAmount: { value: 0.95 }, // Default value from original
+            feedbackAmount: { value: 0.95 }, // Example default
             time: { value: 0.0 },
             audioLevel: { value: 0.0 }
         },
@@ -764,33 +802,55 @@ function setupPostProcessing(shaderCode) {
         depthTest: false, depthWrite: false
     });
 
+    // Glitch Shader (ensure it uses shaderCode.glitchVS/FS)
+    // Prepare uniforms even if using hardcoded GLSL for testing outline later
     glitchShader = new THREE.ShaderMaterial({
-        uniforms: { // Explicitly define uniform structure
+        uniforms: {
             tDiffuse: { value: null },
-            intensity: { value: 0.1 }, // Default value from original
+            intensity: { value: 0.1 }, // Example default
             time: { value: 0.0 },
-            audioLevel: { value: 0.0 }
+            audioLevel: { value: 0.0 },
+            // Add outline uniforms here later if needed, for now structure is minimal
+            // Example structure for later:
+            // uResolution: { value: new THREE.Vector2(targetWidth, targetHeight) },
+            // uOutlineColor: { value: new THREE.Vector4(0.0, 0.0, 0.0, 1.0) },
+            // uOutlineThickness: { value: 1.5 },
+            // uAlphaThreshold: { value: 0.5 }
         },
         vertexShader: shaderCode.glitchVS,
-        fragmentShader: shaderCode.glitchFS,
+        fragmentShader: shaderCode.glitchFS, // Assumes this file currently has the simple threshold test
         depthTest: false, depthWrite: false
     });
 
     // --- Create Copy Material (for ping-pong copy pass) ---
      copyMaterial = new THREE.MeshBasicMaterial({
-        map: null, // Map will be set each frame in animate
-        depthTest: false,
-        depthWrite: false
-    });
+         map: null, // Map will be set each frame in animate
+         depthTest: false,
+         depthWrite: false
+     });
 
     // --- Create Meshes using Shared Geometry ---
     // Create geometry once and reuse for all quads
     const quadGeometry = new THREE.PlaneGeometry(2, 2);
     feedbackQuad = new THREE.Mesh(quadGeometry, feedbackShader);
-    outputQuad = new THREE.Mesh(quadGeometry, glitchShader);
-    copyQuad = new THREE.Mesh(quadGeometry, copyMaterial); // Use shared geometry
+    outputQuad = new THREE.Mesh(quadGeometry, glitchShader); // Uses glitchShader
+    copyQuad = new THREE.Mesh(quadGeometry, copyMaterial); // Uses copyMaterial
 
-    console.log("Post-processing setup complete.");
+    // --- Explicitly Clear renderTargetB Once on Setup ---
+    // Ensures it starts transparent black, regardless of default state
+    if (renderer && renderTargetB) { // Check if they exist
+        renderer.setRenderTarget(renderTargetB);
+        renderer.setClearColor(0x000000, 0.0); // Set clear color to black, alpha to 0
+        renderer.setClearAlpha(0.0);          // Explicitly set clear alpha
+        renderer.clear(true, true, true);     // Clear color, depth, stencil
+        renderer.setRenderTarget(null);       // Reset render target back to default (screen)
+        console.log("Initial clear of renderTargetB performed.");
+    } else {
+        console.error("Failed to perform initial clear on renderTargetB: renderer or target missing.");
+    }
+    // --- End Initial Clear ---
+
+    console.log("Post-processing setup complete (Using NearestFilter, RTB cleared).");
 }
 
 
@@ -944,16 +1004,11 @@ function createLyricObjects() {
 
         // --- Calculate scale factor to fit viewport ---
         const maxAllowedWidth = viewportWorldWidth * 0.95;
-        let scaleFactor = 1.5; // Default/Max Scale? Let's adjust base scale later if needed
+        let scaleFactor = 1.25; // Default/Max Scale? Let's adjust base scale later if needed
         if (totalGlyphWidth > 0 && totalGlyphWidth > maxAllowedWidth) {
             scaleFactor = maxAllowedWidth / totalGlyphWidth;
         }
         lyric.baseScale = scaleFactor; // Store base scale for the group
-        // --- TEMPORARY TEST: Disable Scaling ---
-        console.log(`Original ScaleFactor for "${lyric.text}": ${scaleFactor.toFixed(3)}`);
-        scaleFactor = 1.0;
-        lyric.baseScale = 1.0;
-        // --- END TEMPORARY TEST ---
         // Group scale is now set in applyLetterScaling based on baseScale
         // lineGroup.scale.set(lyric.baseScale, lyric.baseScale, lyric.baseScale); // Remove this line
 
@@ -1030,6 +1085,7 @@ function createLyricObjects() {
 // --- Modified createLetterMesh (UV Test: No V-Flip) ---
 
 // --- createLetterMesh - Final Aspect Ratio Fix Attempt ---
+// --- createLetterMesh - Corrected UV Calculation ---
 function createLetterMesh(char, color /* THREE.Color */) {
     const charData = charUVData[char] || charUVData['?'];
     if (!charData) {
@@ -1040,22 +1096,38 @@ function createLetterMesh(char, color /* THREE.Color */) {
     const atlasWidth = atlasTexture.image.width;
     const atlasHeight = atlasTexture.image.height;
 
-    // UVs - Use the block dimensions from atlas data (Keep this as before)
-    const uMin = charData.x / atlasWidth;
-    const uMax = (charData.x + charData.width) / atlasWidth;
-    const vMin = charData.y / atlasHeight;
-    const vMax = (charData.y + charData.height) / atlasHeight;
+    // --- Geometry Size (Keep using glyphWidth/FONT_SIZE) ---
+    const planeWidth = charData.glyphWidth;
+    const planeHeight = FONT_SIZE; // Assuming this visually matches the glyph height on atlas
 
-    // *** SIMPLIFIED PLANE SIZE CALCULATION ***
-    // Use glyphWidth directly for plane width, FONT_SIZE for height.
-    const planeWidth = charData.glyphWidth; // <--- Use glyphWidth directly
-    const planeHeight = FONT_SIZE;           // <--- Use FONT_SIZE directly
+    // --- UV Calculation (Mapping the GLYPH portion of the atlas block) ---
+    const blockX = charData.x;
+    const blockY = charData.y;
+    const blockWidth = charData.width;   // Includes padding + stroke
+    const blockHeight = charData.height; // Includes padding + stroke
+
+    const glyphWidth = charData.glyphWidth; // The actual measured width
+
+    // Calculate horizontal offset of the glyph within its block on the atlas
+    // Assumes glyph was centered within the block (padding + stroke on both sides)
+    const horizontalPaddingAndStroke = (blockWidth - glyphWidth);
+    const glyphAtlasX = blockX + horizontalPaddingAndStroke / 2;
+
+    // Calculate vertical offset (Approximate - assumes glyph centered vertically)
+    // We use FONT_SIZE as the target visual height.
+    const verticalPaddingAndStroke = (blockHeight - FONT_SIZE); // Estimate padding/stroke around the FONT_SIZE box
+    const glyphAtlasY = blockY + verticalPaddingAndStroke / 2;
+
+    // Calculate UV coordinates targeting only the glyph area
+    const uMin = glyphAtlasX / atlasWidth;
+    const uMax = (glyphAtlasX + glyphWidth) / atlasWidth;
+    const vMin = glyphAtlasY / atlasHeight; // Top edge of glyph box on atlas
+    const vMax = (glyphAtlasY + FONT_SIZE) / atlasHeight; // Bottom edge of glyph box on atlas
 
     // --- Geometry Creation ---
     const geometry = new THREE.BufferGeometry();
 
-     // Adjust vertices based on direct planeWidth/planeHeight
-     // Using the vertex order/indices from the last attempt which seemed correct (BL, BR, TL, TR -> 0, 2, 1, 2, 3, 1)
+    // Vertices remain centered around (0,0) using planeWidth/planeHeight
     const positions = new Float32Array([
         -planeWidth / 2, -planeHeight / 2, 0,  // bottom left (0)
          planeWidth / 2, -planeHeight / 2, 0,  // bottom right (1)
@@ -1064,23 +1136,32 @@ function createLetterMesh(char, color /* THREE.Color */) {
     ]);
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
+    // Use the newly calculated UVs that target the glyph area
+    // const uvs = new Float32Array([
+    //     uMin, vMax, // Vertex 0 (Bottom Left) -> uMin
+    //     uMax, vMax, // Vertex 1 (Bottom Right) -> uMax
+    //     uMin, vMin, // Vertex 2 (Top Left) -> uMin
+    //     uMax, vMin  // Vertex 3 (Top Right) -> uMax
+    // ]);
+    // // --- OR --- Try without V-flip if atlas/texture setup differs
     const uvs = new Float32Array([
-       uMin, vMin, // bottom left (0)
-       uMax, vMin, // bottom right (1)
-       uMin, vMax, // top left (2)
-       uMax, vMax  // top right (3)
+        uMin, vMin, // bottom left (0)
+        uMax, vMin, // bottom right (1)
+        uMin, vMax, // top left (2)
+        uMax, vMax  // top right (3)
     ]);
     geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
 
-    geometry.setIndex([0, 2, 1, 2, 3, 1]); // Indices for BL, TL, BR | TL, TR, BR
+    // Indices remain the same
+    geometry.setIndex([0, 2, 1, 2, 3, 1]); // BL, TL, BR | TL, TR, BR
 
-    // Vertex colors (Remains the same)
-    const colors = new Float32Array(positions.length); // 4 vertices * 3 components
-     for (let i = 0; i < 4; i++) {
-         colors[i*3 + 0] = color.r;
-         colors[i*3 + 1] = color.g;
-         colors[i*3 + 2] = color.b;
-     }
+    // Vertex colors (Remain the same)
+    const colors = new Float32Array(positions.length);
+    for (let i = 0; i < 4; i++) {
+        colors[i*3 + 0] = color.r;
+        colors[i*3 + 1] = color.g;
+        colors[i*3 + 2] = color.b;
+    }
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
     const mesh = new THREE.Mesh(geometry, atlasMaterial);
@@ -1111,9 +1192,9 @@ function cleanupLyric(lyric) {
 // ... (updateActiveLyricsThreeJS remains largely the same, using performance.now() is better than Date.now()) ...
 function updateActiveLyricsThreeJS(currentTimeSeconds) {
     const currentTimeMs = currentTimeSeconds * 1000;
-    const fadeInTime = 150; // ms before start time to be active (for fade-in)
-    const fadeOutTime = 150; // ms after end time to be active (for fade-out)
-    const cleanupDelay = 5000; // ms after becoming inactive to dispose
+    const fadeInTime = 70; // ms before start time to be active (for fade-in)
+    const fadeOutTime = 70; // ms after end time to be active (for fade-out)
+    const cleanupDelay = 100; // ms after becoming inactive to dispose
 
     lyrics.forEach(lyric => {
         if (lyric.disposed) return;
@@ -1256,43 +1337,82 @@ function animate() {
 
     // --- Audio Analysis ---
     if (analyser && (sound?.isPlaying || !audioPaused)) {
-         try {
-            const freqData = analyser.getFrequencyData(); // Get frequency data into the array
-
-            // More robust frequency band calculation
-            const nyquist = listener.context.sampleRate / 2;
-            const freqPerBin = nyquist / analyser.frequencyBinCount;
-
-            const bassCutoff = 150; // Hz
-            const midCutoff = 1500; // Hz
-            const trebleCutoff = 5000; // Hz
-
-            const bassEndIndex = Math.min(analyser.frequencyBinCount, Math.floor(bassCutoff / freqPerBin));
-            const midEndIndex = Math.min(analyser.frequencyBinCount, Math.floor(midCutoff / freqPerBin));
-            const trebleEndIndex = Math.min(analyser.frequencyBinCount, Math.floor(trebleCutoff / freqPerBin));
-
-            let bassSum = 0;
-            // Start from index 1 to ignore DC offset? Often negligible.
-            for (let i = 1; i < bassEndIndex; i++) bassSum += freqData[i] || 0;
-            bass = (bassSum / (bassEndIndex - 1 || 1) / 255.0) * 1.5; // Normalize & boost
-
-            let midSum = 0;
-            for (let i = bassEndIndex; i < midEndIndex; i++) midSum += freqData[i] || 0;
-            mid = (midSum / (midEndIndex - bassEndIndex || 1) / 255.0) * 1.5; // Normalize & boost
-
-            let trebleSum = 0;
-            for (let i = midEndIndex; i < trebleEndIndex; i++) trebleSum += freqData[i] || 0;
-            treble = (trebleSum / (trebleEndIndex - midEndIndex || 1) / 255.0) * 1.5; // Normalize & boost
-
-            // Calculate overall level (combine average and peak band)
-            const avgFreq = analyser.getAverageFrequency() / 255.0; // Average level across analyzed bins
-            const peakBand = Math.max(bass, mid, treble);
-            audioLevel = Math.min(1.0, (peakBand * 0.6 + avgFreq * 0.4) * 1.2); // Weighted average, boosted, capped
-
-         } catch(e) {
-              // console.warn("Audio analysis error:", e);
-              audioLevel = 0; bass = 0; mid = 0; treble = 0;
-         }
+         if (analyser && (sound?.isPlaying || !audioPaused)) {
+            try {
+                // --- Use FFT_SIZE / 2 directly ---
+                const expectedBinCount = (FFT_SIZE / 2); // Calculate the expected value
+   
+                // Ensure freqData array is correctly sized (optional but good practice)
+                // Note: getFrequencyData might already create the correct size array internally
+                // let freqData = analyser.data; // Access the internal array if needed
+                // if (!freqData || freqData.length !== expectedBinCount) {
+                //    analyser.data = new Uint8Array(expectedBinCount); // Ensure internal array exists
+                //    console.warn("Re-initialized analyser data array");
+                // }
+                const freqData = analyser.getFrequencyData(); // Get frequency data
+   
+                // Check if the returned array length matches expectations
+                if (freqData.length !== expectedBinCount) {
+                    console.warn(`Warning: freqData length (${freqData.length}) doesn't match expected bin count (${expectedBinCount})! Calculations might be off.`);
+                    // You might want to return or use freqData.length instead below if this happens
+                }
+                // console.log("Raw Freq Data (first 110 bins):", freqData.slice(0, 110));
+   
+   
+                const nyquist = listener.context.sampleRate / 2;
+                // --- Use expectedBinCount for freqPerBin ---
+                const freqPerBin = nyquist / expectedBinCount;
+                // console.log(`Analyser: ExpectedBinCount=${expectedBinCount}, FreqPerBin=${freqPerBin.toFixed(2)} Hz`);
+   
+   
+                const bassCutoff = 150;
+                const midCutoff = 1500;
+                const trebleCutoff = 5000;
+   
+                // --- Use expectedBinCount for index calculations ---
+                const bassEndIndex = Math.min(expectedBinCount, Math.floor(bassCutoff / freqPerBin));
+                const midEndIndex = Math.min(expectedBinCount, Math.floor(midCutoff / freqPerBin));
+                const trebleEndIndex = Math.min(expectedBinCount, Math.floor(trebleCutoff / freqPerBin));
+                // console.log(`Calculated Indices: BassEnd=${bassEndIndex}, MidEnd=${midEndIndex}, TrebleEnd=${trebleEndIndex}`);
+   
+   
+                // Bass calculation (loop should now run correctly)
+                let bassSum = 0;
+                for (let i = 1; i < bassEndIndex; i++) {
+                   bassSum += freqData[i] || 0;
+                }
+                // console.log(`Sums (Before Norm): bassSum=${bassSum}`);
+                bass = (bassSum / (bassEndIndex - 1 || 1) / 255.0) * 1.5;
+   
+                // Mid calculation (loop should now run correctly)
+                let midSum = 0;
+                for (let i = bassEndIndex; i < midEndIndex; i++) {
+                    midSum += freqData[i] || 0;
+                }
+                // console.log(`Sums (Before Norm): midSum=${midSum}`);
+                mid = (midSum / (midEndIndex - bassEndIndex || 1) / 255.0) * 1.5;
+   
+                // Treble calculation (loop should now run correctly)
+                let trebleSum = 0;
+                for (let i = midEndIndex; i < trebleEndIndex; i++) {
+                    trebleSum += freqData[i] || 0;
+                }
+                // console.log(`Sums (Before Norm): trebleSum=${trebleSum}`);
+                treble = (trebleSum / (trebleEndIndex - midEndIndex || 1) / 255.0) * 1.5;
+   
+                // Overall Level calculation
+                const avgFreq = analyser.getAverageFrequency() / 255.0;
+                const peakBand = Math.max(bass, mid, treble);
+                audioLevel = Math.min(1.0, (peakBand * 0.6 + avgFreq * 0.4) * 0.88);
+   
+                // Final log
+                // console.log(`Audio Levels: L=${audioLevel.toFixed(2)}, B=${bass.toFixed(2)}, M=${mid.toFixed(2)}, T=${treble.toFixed(2)}, Avg=${(avgFreq * 1.2).toFixed(2)}`);
+   
+            } catch(e) {
+                 console.error("Audio analysis error:", e);
+                 audioLevel = 0; bass = 0; mid = 0; treble = 0;
+            }
+        }
 
     } else {
         // Fallback animation when audio is paused/off
@@ -1352,6 +1472,7 @@ function animate() {
    // --- Pass 1: Render Scene ---
    // Render the main scene into Render Target A
    renderer.setRenderTarget(renderTargetA);
+   renderer.setClearAlpha(0.0);
    renderer.clear();
    renderer.render(scene, camera); // Result: A = Current Scene
 
@@ -1364,7 +1485,7 @@ function animate() {
    feedbackShader.uniforms.prevFrame.value = renderTargetB.texture; // Read from original B
    feedbackShader.uniforms.time.value = elapsedTime;
    feedbackShader.uniforms.audioLevel.value = audioLevel;
-   feedbackShader.uniforms.feedbackAmount.value = THREE.MathUtils.lerp(0.85, 0.98, audioLevel * 0.5);
+   feedbackShader.uniforms.feedbackAmount.value = THREE.MathUtils.lerp(0.85, 0.95, audioLevel * 0.12);
 
    quadScene.clear();
    quadScene.add(feedbackQuad);
@@ -1379,8 +1500,8 @@ function animate() {
    glitchShader.uniforms.tDiffuse.value = tempFeedbackTarget.texture; // Read from the CLONE
    glitchShader.uniforms.time.value = elapsedTime;
    glitchShader.uniforms.audioLevel.value = audioLevel;
-//    glitchShader.uniforms.intensity.value = THREE.MathUtils.lerp(0.02, 0.35, bass * 1.2);
-   glitchShader.uniforms.intensity.value = 0.0;
+   glitchShader.uniforms.intensity.value = THREE.MathUtils.lerp(0.02, 0.35, bass * 1.2);
+//    glitchShader.uniforms.intensity.value = 0.0;
 
    quadScene.clear();
    quadScene.add(outputQuad);
