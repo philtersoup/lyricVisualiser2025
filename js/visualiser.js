@@ -73,10 +73,10 @@ let viewportWorldHeight = 0;
 let aspectRatio = 1;
 
 // --- Shader Paths ---
-const FEEDBACK_VERTEX_PATH = '/shaders/feedback.vert.glsl';
-const FEEDBACK_FRAGMENT_PATH = '/shaders/feedback.frag.glsl';
-const GLITCH_VERTEX_PATH = '/shaders/glitch.vert.glsl';
-const GLITCH_FRAGMENT_PATH = '/shaders/glitch.frag.glsl';
+const FEEDBACK_VERTEX_PATH = 'shaders/feedback.vert.glsl'; // CORRECTED
+const FEEDBACK_FRAGMENT_PATH = 'shaders/feedback.frag.glsl'; // CORRECTED
+const GLITCH_VERTEX_PATH = 'shaders/glitch.vert.glsl';     // CORRECTED
+const GLITCH_FRAGMENT_PATH = 'shaders/glitch.frag.glsl';   // CORRECTED
 
 
 // --- Constants ---
